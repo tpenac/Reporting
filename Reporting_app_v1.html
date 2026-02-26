@@ -25,7 +25,14 @@
 
   <div id="root"></div>
 
-  <script type="text/babel">
+  <script>
+    // Limpia el cache de Babel (sessionStorage) para forzar recompilacion al actualizar
+    (function() {
+      var keys = Object.keys(sessionStorage);
+      keys.forEach(function(k) { if (k.indexOf('babel') !== -1 || k.indexOf('transform') !== -1) sessionStorage.removeItem(k); });
+    })();
+  </script>
+  <script type="text/babel" data-build="20260226-v5">
     const { useState, useEffect, useCallback, useRef } = React;
 
     // ─── CONSTANTES ───────────────────────────────────────────────────────────
