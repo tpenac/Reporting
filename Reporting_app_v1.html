@@ -222,21 +222,46 @@
       return -1;
     }
 
-    // Detecta la columna de cada mes en la fila de cabecera
-    // Requiere que el año este en la misma celda para no confundir ene-25 con ene-26
+    // Detecta columnas de meses buscando la secuencia consecutiva MAS A LA IZQUIERDA.
+    // Estrategia principal: primer grupo de 12 meses consecutivos (sin requerir ano).
+    // Esto evita coger secciones de otras empresas (AGS, AHL, FTP) que aparecen
+    // mas a la derecha y SI tienen el ano en la cabecera.
     function findMonthCols(headerRow, mesLabels) {
+      const yr = mesLabels[0]?.substring(mesLabels[0].indexOf('-') + 1) || '26';
+
+      // Paso 1: busca la secuencia leftmost de 12 meses consecutivos (sin requerir ano)
+      for (let startC = 0; startC < headerRow.length - 11; startC++) {
+        const v0 = String(headerRow[startC]).toLowerCase().trim();
+        // El primer mes debe empezar con 'ene'
+        if (!v0.startsWith('ene') && !(v0.includes('ene') && (v0.includes('.') || v0.includes('-')))) continue;
+        // Intenta encontrar los 12 meses en orden a partir de startC
+        const candidate = { 0: startC };
+        let prev = startC;
+        let ok = true;
+        for (let i = 1; i < 12; i++) {
+          let found = false;
+          for (let c = prev + 1; c <= prev + 4 && c < headerRow.length; c++) {
+            const v = String(headerRow[c]).toLowerCase().trim();
+            if (v.startsWith(MESES[i]) || v.includes(MESES[i] + '.') || v.includes(MESES[i] + '-')) {
+              candidate[i] = c; prev = c; found = true; break;
+            }
+          }
+          if (!found) { ok = false; break; }
+        }
+        if (ok) {
+          console.log('[findMonthCols] Secuencia encontrada en col', startC, '| cols:', JSON.stringify(candidate));
+          return candidate;
+        }
+      }
+
+      // Paso 2 (fallback): busca mes+ano por celda (util si cada seccion tiene el ano)
       const cols = {};
       mesLabels.forEach((label, idx) => {
-        const mes = label.substring(0, 3).toLowerCase(); // 'ene', 'feb', etc.
-        const yr  = label.indexOf('-') >= 0 ? label.substring(label.indexOf('-') + 1) : ''; // '26' o '25'
-        // Paso 1: busca celda que contenga el mes Y el año
+        const mes = label.substring(0, 3).toLowerCase();
         for (let c = 0; c < headerRow.length; c++) {
           const v = String(headerRow[c]).toLowerCase().trim();
-          if (v.includes(mes) && yr && (v.includes(yr) || v.includes('20' + yr))) {
-            cols[idx] = c; break;
-          }
+          if (v.includes(mes) && (v.includes(yr) || v.includes('20' + yr))) { cols[idx] = c; break; }
         }
-        // Paso 2 (fallback): solo mes, evitando columnas ya asignadas
         if (cols[idx] === undefined) {
           const usadas = new Set(Object.values(cols));
           for (let c = 0; c < headerRow.length; c++) {
@@ -246,23 +271,28 @@
           }
         }
       });
+      console.log('[findMonthCols] Fallback cols:', JSON.stringify(cols));
       return cols;
     }
 
-    // Detecta la columna de conceptos (la columna con mas texto, solo en las primeras columnas)
-    // Limitamos a las primeras 10 columnas para evitar columnas auxiliares de la derecha
-    function findLabelCol(rows, headerRow) {
+    // Detecta la columna de labels buscando la que produce MAS coincidencias con matchFn.
+    // Mucho mas robusto que contar texto: solo cuenta si el label REALMENTE corresponde
+    // a una linea conocida del informe.
+    function findLabelCol(rows, headerRow, matchFn) {
+      const maxCol = 15;
       const counts = {};
-      const maxCol = 10;
-      for (let r = headerRow + 1; r < Math.min(rows.length, headerRow + 35); r++) {
+      for (let r = headerRow + 1; r < Math.min(rows.length, headerRow + 50); r++) {
         for (let c = 0; c < Math.min(maxCol, rows[r].length); c++) {
-          const v = String(rows[r][c]).trim();
-          if (v.length > 3 && isNaN(Number(v.replace(/\./g,'').replace(',','.')))) {
-            counts[c] = (counts[c] || 0) + 1;
-          }
+          const v = String(rows[r][c] || '').trim();
+          if (!v || v.length < 3) continue;
+          const matched = matchFn ? matchFn(v) : (v.length > 3 && isNaN(Number(v.replace(/\./g,'').replace(',','.'))));
+          if (matched) counts[c] = (counts[c] || 0) + 1;
         }
       }
-      return parseInt(Object.entries(counts).sort((a,b) => b[1]-a[1])[0]?.[0] ?? 0);
+      const best = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+      const result = parseInt(best?.[0] ?? 0);
+      console.log('[findLabelCol] Puntuaciones por col:', JSON.stringify(counts), '| elegido:', result);
+      return result;
     }
 
     // Mapea labels del Excel a keys del PYG_LINES por similitud
@@ -304,8 +334,8 @@
       // Log de las primeras 20 celdas de la fila de cabecera para diagnostico
       console.log('[parsePygEvol] Fila cabecera (primeras 20 celdas):', rows[headerIdx].slice(0, 20));
       const monthCols = findMonthCols(rows[headerIdx], mesLabels);
-      const labelCol = findLabelCol(rows, headerIdx);
-      console.log('[parsePygEvol] monthCols:', monthCols, '| labelCol:', labelCol);
+      const labelCol = findLabelCol(rows, headerIdx, matchPygLine);
+      console.log('[parsePygEvol] monthCols:', JSON.stringify(monthCols), '| labelCol:', labelCol);
       // Log de las primeras 5 filas de datos para diagnostico
       for (let dbg = headerIdx + 1; dbg <= headerIdx + 5 && dbg < rows.length; dbg++) {
         console.log('[parsePygEvol] Fila dato', dbg, '- label[col', labelCol, ']:', rows[dbg][labelCol], '| mes0[col', monthCols[0], ']:', rows[dbg][monthCols[0]]);
@@ -411,7 +441,7 @@
       }
       console.log('[parseBsEvol] histCol:', histCol, '| monthCols:', monthCols);
 
-      const labelCol = findLabelCol(rows, headerIdx);
+      const labelCol = findLabelCol(rows, headerIdx, matchBsLine);
       console.log('[parseBsEvol] labelCol:', labelCol);
 
       const hist = {};
@@ -444,7 +474,8 @@
       const headerIdx = findHeaderRow(rows, mesLabels);
       if (headerIdx < 0) return null;
       const monthCols = findMonthCols(rows[headerIdx], mesLabels);
-      const labelCol = findLabelCol(rows, headerIdx);
+      // Para hojas genéricas (NoRec, OPEX, etc.) no tenemos matchFn, usamos null (modo texto)
+      const labelCol = findLabelCol(rows, headerIdx, null);
       const result = {};
       for (let r = headerIdx + 1; r < rows.length; r++) {
         const label = String(rows[r][labelCol] || '').trim();
