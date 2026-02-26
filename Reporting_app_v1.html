@@ -1,0 +1,1105 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Reporting AGROSANA 2026</title>
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.development.js"></script>
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.development.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.28.4/babel.min.js"></script>
+  <script src="https://fastly.jsdelivr.net/npm/lucide@0.513.0/dist/umd/lucide.js"></script>
+  <script>window.lucide = window.lucide || { createIcons: function(){} };</script>
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
+</head>
+<body class="bg-gray-100 min-h-screen">
+
+  <pre id="bootErrorPanel" style="display:none;position:fixed;inset:12px;overflow:auto;padding:12px;background:#111827;color:#F9FAFB;border-radius:10px;z-index:999999;white-space:pre-wrap;font-family:monospace;font-size:12px;"></pre>
+  <script>
+    (function(){
+      function show(msg){ var el=document.getElementById('bootErrorPanel'); if(!el)return; el.style.display='block'; el.textContent+=msg+"\n"; }
+      window.addEventListener('error',function(e){ show('ERROR: '+(e.message||e.type)); if(e&&e.error&&e.error.stack)show(e.error.stack); });
+      window.addEventListener('unhandledrejection',function(e){ var r=e&&e.reason; show('PROMISE: '+(r&&(r.stack||r.message)?r.stack||r.message:String(r))); });
+    })();
+  </script>
+
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useCallback, useRef } = React;
+
+    // ─── CONSTANTES ───────────────────────────────────────────────────────────
+
+    const MESES = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+    const MESES_LABEL = ['ene-26','feb-26','mar-26','abr-26','may-26','jun-26','jul-26','ago-26','sep-26','oct-26','nov-26','dic-26'];
+    const MESES_HIST  = ['ene-25','feb-25','mar-25','abr-25','may-25','jun-25','jul-25','ago-25','sep-25','oct-25','nov-25','dic-25'];
+    const EMPRESAS = ['Consolidado','AGS','AHL','FTP'];
+
+    // Lineas del PyG (sin acentos ni caracteres especiales en las keys)
+    const PYG_LINES = [
+      { key:'ventas',      label:'Total Ventas',                              tipo:'total' },
+      { key:'coste',       label:'(-) Coste Total',                           tipo:'coste' },
+      { key:'margen',      label:'Margen Bruto',                              tipo:'subtotal' },
+      { key:'pct_mb',      label:'(%) Ventas MB',                             tipo:'pct' },
+      { key:'personal',    label:'(-) Gastos de personal',                    tipo:'coste' },
+      { key:'opex',        label:'(-) Otros gastos de explotacion',           tipo:'coste' },
+      { key:'deterioro',   label:'(-) Deterioro de credito comercial (0,4%)', tipo:'coste' },
+      { key:'ebitda',      label:'EBITDA',                                    tipo:'subtotal' },
+      { key:'pct_ebitda',  label:'(%) Ventas EBITDA',                        tipo:'pct' },
+      { key:'amort',       label:'(-) Amortizaciones y otros resultados',     tipo:'coste' },
+      { key:'ebit',        label:'EBIT',                                      tipo:'subtotal' },
+      { key:'gtos_fin',    label:'(+/-) Ingresos/gastos financieros',         tipo:'coste' },
+      { key:'no_rec',      label:'(-) Gastos no recurrentes',                 tipo:'coste' },
+      { key:'dto_com',     label:'(+/-) Ingresos/gastos dto. comercial',      tipo:'otro' },
+      { key:'bai',         label:'BAI',                                       tipo:'subtotal' },
+      { key:'impuestos',   label:'(-) Impuestos',                             tipo:'coste' },
+      { key:'bdi',         label:'BDI',                                       tipo:'subtotal' },
+    ];
+
+    // Lineas del BS
+    const BS_LINES = [
+      { key:'act_no_cor',   label:'Activo no Corriente',                              grupo:'activo',  nivel:1 },
+      { key:'inmov',        label:'Inmovilizado material / Inmaterial',               grupo:'activo',  nivel:2 },
+      { key:'inv_grupo_lp', label:'Inversiones en empresas del grupo LP',             grupo:'activo',  nivel:2 },
+      { key:'inv_fin_lp',   label:'Inversiones financieras a largo plazo',            grupo:'activo',  nivel:2 },
+      { key:'imp_dif_act',  label:'Activos por impuesto diferido',                    grupo:'activo',  nivel:2 },
+      { key:'act_cor',      label:'Activo Corriente',                                 grupo:'activo',  nivel:1 },
+      { key:'existencias',  label:'Existencias',                                      grupo:'activo',  nivel:2 },
+      { key:'clientes',     label:'Clientes',                                         grupo:'activo',  nivel:2 },
+      { key:'imp_cor_act',  label:'Activos por impuesto corriente',                   grupo:'activo',  nivel:2 },
+      { key:'otros_aapp',   label:'Otros creditos con las AAPP',                      grupo:'activo',  nivel:2 },
+      { key:'inv_fin_cp',   label:'Inversiones financieras a corto plazo',            grupo:'activo',  nivel:2 },
+      { key:'periodif',     label:'Periodificaciones a corto plazo',                  grupo:'activo',  nivel:2 },
+      { key:'tesoreria',    label:'Tesoreria',                                        grupo:'activo',  nivel:2 },
+      { key:'activo',       label:'ACTIVO',                                           grupo:'activo',  nivel:0 },
+      { key:'ffpp',         label:'Fondos Propios',                                   grupo:'pasivo',  nivel:1 },
+      { key:'otros_pas',    label:'Otros',                                            grupo:'pasivo',  nivel:2 },
+      { key:'imp_dif_pas',  label:'Pasivos por impuesto diferido',                    grupo:'pasivo',  nivel:2 },
+      { key:'deuda_fin',    label:'Deuda Financiera',                                 grupo:'pasivo',  nivel:1 },
+      { key:'deuda_entid',  label:'Deudas con entidades de credito',                  grupo:'pasivo',  nivel:2 },
+      { key:'otros_fin',    label:'Otros pasivos financieros/Deuda empr grupo',       grupo:'pasivo',  nivel:2 },
+      { key:'acreedores',   label:'Acreedores Comerciales',                           grupo:'pasivo',  nivel:1 },
+      { key:'proveedores',  label:'Proveedores/acreedores',                           grupo:'pasivo',  nivel:2 },
+      { key:'aapp_imp',     label:'Administracion Publica. Imp sociedades',           grupo:'pasivo',  nivel:2 },
+      { key:'pasivo',       label:'PASIVO',                                           grupo:'pasivo',  nivel:0 },
+    ];
+
+    // ─── UTILIDADES ───────────────────────────────────────────────────────────
+
+    // Formato numerico: miles con punto, negativos entre parentesis
+    function fmt(val, decimals = 0) {
+      if (val === null || val === undefined || val === '' || isNaN(Number(val))) return '-';
+      const n = Number(val);
+      const abs = Math.abs(n).toLocaleString('es-ES', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+      return n < 0 ? '(' + abs + ')' : abs;
+    }
+
+    function fmtPct(val) {
+      if (val === null || val === undefined || isNaN(Number(val))) return '-';
+      const n = Number(val);
+      return (n >= 0 ? '' : '') + n.toFixed(1).replace('.', ',') + '%';
+    }
+
+    function parseNum(str) {
+      if (str === null || str === undefined || str === '') return 0;
+      const s = String(str).replace(/\./g, '').replace(',', '.').replace(/[()]/g, m => m === '(' ? '-' : '').replace(/[^0-9.\-]/g, '');
+      return parseFloat(s) || 0;
+    }
+
+    // Lee una hoja de xlsx y devuelve array de arrays (valores en texto)
+    function sheetToArray(ws) {
+      const ref = ws['!ref'];
+      if (!ref) return [];
+      const range = XLSX.utils.decode_range(ref);
+      const rows = [];
+      for (let r = range.s.r; r <= range.e.r; r++) {
+        const row = [];
+        for (let c = range.s.c; c <= range.e.c; c++) {
+          const cell = ws[XLSX.utils.encode_cell({ r, c })];
+          row.push(cell ? (cell.v !== undefined ? cell.v : '') : '');
+        }
+        rows.push(row);
+      }
+      return rows;
+    }
+
+    // ─── STORAGE ──────────────────────────────────────────────────────────────
+
+    const STORAGE_KEYS = {
+      pygHist:    'rep_pyg_hist',
+      pygPpto:    'rep_pyg_ppto',
+      bsHist:     'rep_bs_hist',
+      bsPpto:     'rep_bs_ppto',
+      norecPpto:  'rep_norec_ppto',
+      opexHist:   'rep_opex_hist',
+      opexPpto:   'rep_opex_ppto',
+      pygReal:    'rep_pyg_real',
+      bsReal:     'rep_bs_real',
+      norecReal:  'rep_norec_real',
+      opexReal:   'rep_opex_real',
+      capexReal:  'rep_capex_real',
+      dfnReal:    'rep_dfn_real',
+    };
+
+    function loadFromStorage(key) {
+      try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : null; } catch { return null; }
+    }
+    function saveToStorage(key, data) {
+      try { localStorage.setItem(key, JSON.stringify(data)); } catch(e) { console.error('Storage error', e); }
+    }
+    function clearStorage(key) {
+      try { localStorage.removeItem(key); } catch {}
+    }
+
+    // ─── PARSERS DE EXCEL ──────────────────────────────────────────────────────
+
+    // Detecta la fila de cabecera buscando el primer mes conocido
+    function findHeaderRow(rows, mesLabels) {
+      for (let r = 0; r < rows.length; r++) {
+        for (let c = 0; c < rows[r].length; c++) {
+          const v = String(rows[r][c]).toLowerCase().trim();
+          if (mesLabels.some(m => v.includes(m.toLowerCase().replace('-','').substring(0,3)))) return r;
+        }
+      }
+      return -1;
+    }
+
+    // Detecta la columna de cada mes en la fila de cabecera
+    function findMonthCols(headerRow, mesLabels) {
+      const cols = {};
+      mesLabels.forEach((label, idx) => {
+        const abbr = label.toLowerCase().replace('-','').substring(0,3);
+        for (let c = 0; c < headerRow.length; c++) {
+          const v = String(headerRow[c]).toLowerCase().trim();
+          if (v.includes(abbr)) { cols[idx] = c; break; }
+        }
+      });
+      return cols;
+    }
+
+    // Detecta la columna de conceptos (la columna con mas texto no vacia)
+    function findLabelCol(rows, headerRow) {
+      const counts = {};
+      for (let r = headerRow + 1; r < Math.min(rows.length, headerRow + 30); r++) {
+        for (let c = 0; c < rows[r].length; c++) {
+          const v = String(rows[r][c]).trim();
+          if (v.length > 3 && isNaN(Number(v.replace(',','.')))) {
+            counts[c] = (counts[c] || 0) + 1;
+          }
+        }
+      }
+      return parseInt(Object.entries(counts).sort((a,b) => b[1]-a[1])[0]?.[0] ?? 0);
+    }
+
+    // Mapea labels del Excel a keys del PYG_LINES por similitud
+    function matchPygLine(label) {
+      const l = label.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+      if (l.includes('venta') || l.includes('ingres')) return 'ventas';
+      if (l.includes('coste') || l.includes('costo')) return 'coste';
+      if (l.includes('margen')) return 'margen';
+      if (l.includes('% ventas') && l.includes('mb')) return 'pct_mb';
+      if (l.includes('personal') || l.includes('sueldo')) return 'personal';
+      if (l.includes('otros gastos') || l.includes('explotac')) return 'opex';
+      if (l.includes('deterioro') || l.includes('credito')) return 'deterioro';
+      if (l.includes('ebitda')) return 'ebitda';
+      if (l.includes('% ventas') && l.includes('ebitda')) return 'pct_ebitda';
+      if (l.includes('amort')) return 'amort';
+      if ((l.includes('ebit') || l.includes('bfo')) && !l.includes('ebitda')) return 'ebit';
+      if (l.includes('financier') && (l.includes('ingreso') || l.includes('gasto'))) return 'gtos_fin';
+      if (l.includes('no recurrente') || l.includes('no recur')) return 'no_rec';
+      if (l.includes('dto') && l.includes('comercial')) return 'dto_com';
+      if (l.includes('bai') || l.includes('antes de impuesto')) return 'bai';
+      if (l.includes('impuesto') || l.includes('irpf')) return 'impuestos';
+      if (l.includes('bdi') || l.includes('resultado') || l.includes('beneficio neto')) return 'bdi';
+      return null;
+    }
+
+    // Parsea un Excel de PyG Evol (12 meses en columnas, lineas en filas)
+    // mesLabels: array de 12 strings de mes a buscar
+    // Devuelve: { ventas: [v1..v12], coste: [...], ... }
+    function parsePygEvol(wb, sheetName, mesLabels) {
+      const ws = wb.Sheets[sheetName];
+      if (!ws) return null;
+      const rows = sheetToArray(ws);
+      const headerIdx = findHeaderRow(rows, mesLabels);
+      if (headerIdx < 0) return null;
+      const monthCols = findMonthCols(rows[headerIdx], mesLabels);
+      const labelCol = findLabelCol(rows, headerIdx);
+      const result = {};
+      for (let r = headerIdx + 1; r < rows.length; r++) {
+        const label = String(rows[r][labelCol] || '').trim();
+        if (!label) continue;
+        const key = matchPygLine(label);
+        if (!key) continue;
+        const vals = MESES.map((_, idx) => {
+          const c = monthCols[idx];
+          return c !== undefined ? parseNum(rows[r][c]) : 0;
+        });
+        result[key] = vals;
+      }
+      return result;
+    }
+
+    // Mapea labels del Excel a keys del BS_LINES
+    function matchBsLine(label) {
+      const l = label.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+      if (l === 'activo no corriente' || l.includes('activo no corr')) return 'act_no_cor';
+      if (l.includes('inmovilizado')) return 'inmov';
+      if (l.includes('inversiones') && l.includes('grupo') && l.includes('largo')) return 'inv_grupo_lp';
+      if (l.includes('inversiones') && l.includes('largo') && !l.includes('grupo')) return 'inv_fin_lp';
+      if (l.includes('impuesto diferido') && l.includes('activ')) return 'imp_dif_act';
+      if (l === 'activo corriente' || l.includes('activo corr')) return 'act_cor';
+      if (l.includes('existencia')) return 'existencias';
+      if (l.includes('cliente')) return 'clientes';
+      if (l.includes('impuesto corriente') && l.includes('activ')) return 'imp_cor_act';
+      if (l.includes('aapp') || l.includes('administraciones') && l.includes('credito')) return 'otros_aapp';
+      if (l.includes('inversiones') && l.includes('corto') && !l.includes('grupo')) return 'inv_fin_cp';
+      if (l.includes('periodif')) return 'periodif';
+      if (l.includes('tesorer')) return 'tesoreria';
+      if (l === 'activo') return 'activo';
+      if (l.includes('fondos propios') || l.includes('patrimonio')) return 'ffpp';
+      if (l.includes('impuesto diferido') && l.includes('pasiv')) return 'imp_dif_pas';
+      if ((l.includes('otros') || l.includes('pasivos')) && !l.includes('financier') && !l.includes('corriente')) return 'otros_pas';
+      if (l.includes('deuda financiera') && !l.includes('entidad') && !l.includes('otros')) return 'deuda_fin';
+      if (l.includes('entidades de credito') || l.includes('entidades de cr')) return 'deuda_entid';
+      if ((l.includes('otros pasivos') || l.includes('deuda empr')) && l.includes('financier')) return 'otros_fin';
+      if (l.includes('acreedores comerciales')) return 'acreedores';
+      if (l.includes('proveedor')) return 'proveedores';
+      if (l.includes('administracion') && l.includes('imp')) return 'aapp_imp';
+      if (l === 'pasivo') return 'pasivo';
+      return null;
+    }
+
+    // Parsea BS Evol: primera columna = historico (dic-25), luego 12 meses 2026
+    // Devuelve: { hist: {key: val}, real: {key: [v1..v12]} }
+    function parseBsEvol(wb, sheetName) {
+      const ws = wb.Sheets[sheetName];
+      if (!ws) return null;
+      const rows = sheetToArray(ws);
+      // Busca la fila con "dic" y "ene" consecutivos
+      let headerIdx = -1;
+      for (let r = 0; r < rows.length; r++) {
+        const hasEnero = rows[r].some(v => String(v).toLowerCase().includes('ene'));
+        const hasDic   = rows[r].some(v => String(v).toLowerCase().includes('dic'));
+        if (hasEnero && hasDic) { headerIdx = r; break; }
+      }
+      if (headerIdx < 0) return null;
+
+      // Localiza columna hist (dic-25) y columnas mensuales (ene-26..dic-26)
+      let histCol = -1;
+      const monthCols = {};
+      for (let c = 0; c < rows[headerIdx].length; c++) {
+        const v = String(rows[headerIdx][c]).toLowerCase().trim();
+        if (v.includes('dic') && (v.includes('25') || v.includes('anterior'))) histCol = c;
+        MESES.forEach((m, idx) => {
+          if (v.includes(m) && (v.includes('26') || idx === 0)) {
+            if (monthCols[idx] === undefined) monthCols[idx] = c;
+          }
+        });
+      }
+      if (histCol < 0) histCol = rows[headerIdx].findIndex(v => String(v).toLowerCase().includes('dic'));
+      const labelCol = findLabelCol(rows, headerIdx);
+
+      const hist = {};
+      const real = {};
+      BS_LINES.forEach(l => { hist[l.key] = 0; real[l.key] = Array(12).fill(0); });
+
+      for (let r = headerIdx + 1; r < rows.length; r++) {
+        const label = String(rows[r][labelCol] || '').trim();
+        if (!label) continue;
+        const key = matchBsLine(label);
+        if (!key) continue;
+        if (histCol >= 0) hist[key] = parseNum(rows[r][histCol]);
+        MESES.forEach((_, idx) => {
+          const c = monthCols[idx];
+          if (c !== undefined) real[key][idx] = parseNum(rows[r][c]);
+        });
+      }
+      return { hist, real };
+    }
+
+    // Parsea plantilla simple mensual (NoRec, OPEX, CAPEX, DFN)
+    // Devuelve: { concepto: [v1..v12], ..., _total: [v1..v12] }
+    function parseMonthlySheet(wb, sheetName, mesLabels) {
+      const ws = wb.Sheets[sheetName];
+      if (!ws) return null;
+      const rows = sheetToArray(ws);
+      const headerIdx = findHeaderRow(rows, mesLabels);
+      if (headerIdx < 0) return null;
+      const monthCols = findMonthCols(rows[headerIdx], mesLabels);
+      const labelCol = findLabelCol(rows, headerIdx);
+      const result = {};
+      for (let r = headerIdx + 1; r < rows.length; r++) {
+        const label = String(rows[r][labelCol] || '').trim();
+        if (!label) continue;
+        const vals = MESES.map((_, idx) => {
+          const c = monthCols[idx];
+          return c !== undefined ? parseNum(rows[r][c]) : 0;
+        });
+        result[label] = vals;
+      }
+      return result;
+    }
+
+    // ─── CALCULOS ──────────────────────────────────────────────────────────────
+
+    // Calcula los % del PyG a partir de ventas
+    function calcPygPct(pyg) {
+      if (!pyg || !pyg.ventas) return pyg;
+      const out = { ...pyg };
+      out.pct_mb     = pyg.ventas.map((v, i) => v ? (pyg.margen?.[i] || 0) / v : 0);
+      out.pct_ebitda = pyg.ventas.map((v, i) => v ? (pyg.ebitda?.[i] || 0) / v : 0);
+      return out;
+    }
+
+    // Suma YTD hasta el mes indicado (0-indexed)
+    function ytd(arr, mesFin) {
+      if (!arr) return 0;
+      return arr.slice(0, mesFin + 1).reduce((a, b) => a + b, 0);
+    }
+
+    // Diferencia absoluta y relativa
+    function dif(a, b) {
+      return { abs: a - b, rel: b !== 0 ? (a - b) / Math.abs(b) : 0 };
+    }
+
+    // Calcula CF a partir de PyG + BS mensual
+    function calcCF(pygReal, bsReal, bsHist, capex, dfn, mes) {
+      if (!pygReal || !bsReal) return null;
+      const m = mes; // indice 0-11
+
+      function bsDelta(key) {
+        const prev = m === 0 ? (bsHist?.[key] || 0) : (bsReal[key]?.[m-1] || 0);
+        const curr = bsReal[key]?.[m] || 0;
+        return curr - prev;
+      }
+
+      const ebitda   = pygReal.ebitda?.[m] || 0;
+      const noRec    = pygReal.no_rec?.[m] || 0;
+      const dtoComercial = pygReal.dto_com?.[m] || 0;
+      const ebitdaPF = ebitda - noRec - dtoComercial;
+
+      const dExist    = bsDelta('existencias');
+      const dClientes = bsDelta('clientes');
+      const dProv     = bsDelta('proveedores');
+      const dPeriodif = bsDelta('periodif');
+      const totalWC   = dExist + dClientes + dProv + dPeriodif;
+
+      const dAAPP     = bsDelta('aapp_imp') + bsDelta('imp_cor_act');
+      const fcOp      = ebitda + totalWC + dAAPP;
+
+      const capexVal  = capex ? Object.values(capex).reduce((s, arr) => s + (arr[m] || 0), 0) : 0;
+      const fcDisp    = fcOp - capexVal;
+
+      const gtosFin   = pygReal.gtos_fin?.[m] || 0;
+      const totalFin  = gtosFin;
+      const fcRepago  = fcDisp + totalFin;
+
+      const tesCurr   = bsReal.tesoreria?.[m] || 0;
+      const tesPrev   = m === 0 ? (bsHist?.tesoreria || 0) : (bsReal.tesoreria?.[m-1] || 0);
+      const varCaja   = tesCurr - tesPrev;
+
+      return {
+        ebitdaPF, noRec, dtoComercial, ebitda,
+        dExist, dClientes, dProv, dPeriodif, totalWC,
+        dAAPP, fcOp,
+        capexVal, fcDisp,
+        gtosFin, totalFin, fcRepago,
+        varCaja, tesPrev, tesCurr,
+      };
+    }
+
+    // ─── COMPONENTES UI ───────────────────────────────────────────────────────
+
+    function Badge({ children, color = 'gray' }) {
+      const colors = {
+        gray:   'bg-gray-100 text-gray-700',
+        green:  'bg-green-100 text-green-700',
+        orange: 'bg-orange-100 text-orange-700',
+        blue:   'bg-blue-100 text-blue-700',
+        red:    'bg-red-100 text-red-700',
+      };
+      return <span className={'text-xs px-2 py-0.5 rounded-full font-medium ' + (colors[color]||colors.gray)}>{children}</span>;
+    }
+
+    function UploadButton({ label, storageKey, onLoaded, loaded, color = 'blue' }) {
+      const fileRef = useRef(null);
+      const colors = {
+        blue:   'border-blue-300 bg-blue-50 hover:bg-blue-100 text-blue-700',
+        orange: 'border-orange-300 bg-orange-50 hover:bg-orange-100 text-orange-700',
+        green:  'border-green-300 bg-green-50 hover:bg-green-100 text-green-700',
+      };
+
+      function handleFile(e) {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = function(ev) {
+          try {
+            const wb = XLSX.read(ev.target.result, { type: 'array' });
+            onLoaded(wb, storageKey);
+          } catch(err) {
+            alert('Error al leer el archivo: ' + err.message);
+          }
+        };
+        reader.readAsArrayBuffer(file);
+        e.target.value = '';
+      }
+
+      return (
+        <div className={'border-2 border-dashed rounded-lg p-3 cursor-pointer ' + (colors[color]||colors.blue) + (loaded ? ' opacity-75' : '')}
+             onClick={() => fileRef.current.click()}>
+          <input ref={fileRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={handleFile} />
+          <div className="flex items-center gap-2">
+            <span className="text-lg">{loaded ? '✓' : '↑'}</span>
+            <div>
+              <div className="text-sm font-medium">{label}</div>
+              {loaded && <div className="text-xs opacity-70">Cargado — click para reemplazar</div>}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    function SectionTitle({ children }) {
+      return <h2 className="text-lg font-bold text-gray-800 mb-4 pb-2 border-b-2 border-gray-200">{children}</h2>;
+    }
+
+    function TabBar({ tabs, active, onChange }) {
+      return (
+        <div className="flex gap-1 mb-4 bg-gray-100 p-1 rounded-lg w-fit">
+          {tabs.map(t => (
+            <button key={t} onClick={() => onChange(t)}
+              className={'px-4 py-1.5 rounded-md text-sm font-medium transition-all ' +
+                (active === t ? 'bg-white shadow text-blue-700' : 'text-gray-500 hover:text-gray-700')}>
+              {t}
+            </button>
+          ))}
+        </div>
+      );
+    }
+
+    // Celda de tabla con color segun tipo
+    function Td({ value, tipo = 'normal', align = 'right', className = '' }) {
+      const base = 'px-3 py-1.5 text-sm tabular-nums ';
+      const colors = {
+        hist:     'text-blue-700',
+        real:     'text-orange-600 font-medium',
+        ppto:     'text-green-700',
+        dif_pos:  'text-green-700',
+        dif_neg:  'text-red-600',
+        label:    'text-gray-800 font-medium',
+        subtotal: 'text-gray-900 font-bold bg-gray-50',
+        total:    'text-gray-900 font-bold bg-gray-100',
+        pct:      'text-gray-500 italic',
+      };
+      return (
+        <td className={base + (colors[tipo] || 'text-gray-700') + ' text-' + align + ' ' + className}>
+          {value}
+        </td>
+      );
+    }
+
+    function TdDif({ abs, rel, positiveIsGood = true }) {
+      const good = positiveIsGood ? abs >= 0 : abs <= 0;
+      const tipo = abs === 0 ? 'normal' : good ? 'dif_pos' : 'dif_neg';
+      return (
+        <>
+          <Td value={fmt(abs)} tipo={tipo} />
+          <Td value={fmtPct(rel * 100)} tipo={tipo} />
+        </>
+      );
+    }
+
+    // ─── VISTAS PyG ───────────────────────────────────────────────────────────
+
+    function PygTable({ hist, real, ppto, titulo }) {
+      if (!real) return <div className="text-gray-400 italic text-sm p-4">Sin datos cargados</div>;
+      const realC  = calcPygPct(real);
+      const histC  = calcPygPct(hist);
+      const pptoC  = calcPygPct(ppto);
+
+      return (
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse text-sm">
+            <thead>
+              <tr className="bg-gray-800 text-white">
+                <th className="px-3 py-2 text-left w-64">Cuenta de Perdidas y Ganancias</th>
+                <th className="px-3 py-2 text-right text-blue-300">{hist ? 'Historico' : ''}</th>
+                <th className="px-3 py-2 text-right text-orange-300">Real</th>
+                <th className="px-3 py-2 text-right text-green-300">{ppto ? 'Presupuesto' : ''}</th>
+                {hist && <><th className="px-3 py-2 text-right text-xs" colSpan={2}>Dif. Real/Hist</th></>}
+                {ppto && <><th className="px-3 py-2 text-right text-xs" colSpan={2}>Dif. Real/Ppto</th></>}
+              </tr>
+              <tr className="bg-gray-700 text-gray-300 text-xs">
+                <th className="px-3 py-1">Datos en miles €</th>
+                <th className="px-3 py-1 text-right">{hist ? titulo?.hist || '' : ''}</th>
+                <th className="px-3 py-1 text-right">{titulo?.real || ''}</th>
+                <th className="px-3 py-1 text-right">{ppto ? titulo?.ppto || '' : ''}</th>
+                {hist && <><th className="px-3 py-1 text-right">Abs.</th><th className="px-3 py-1 text-right">Rel.</th></>}
+                {ppto && <><th className="px-3 py-1 text-right">Abs.</th><th className="px-3 py-1 text-right">Rel.</th></>}
+              </tr>
+            </thead>
+            <tbody>
+              {PYG_LINES.map(line => {
+                const rv = realC?.[line.key] ?? 0;
+                const hv = histC?.[line.key] ?? 0;
+                const pv = pptoC?.[line.key] ?? 0;
+                const isSubtotal = line.tipo === 'subtotal' || line.tipo === 'total';
+                const isPct = line.tipo === 'pct';
+                const rowClass = isSubtotal ? 'border-t-2 border-gray-300' : isPct ? 'bg-gray-50' : '';
+
+                return (
+                  <tr key={line.key} className={'hover:bg-yellow-50 border-b border-gray-100 ' + rowClass}>
+                    <Td value={line.label} tipo={isSubtotal ? 'subtotal' : isPct ? 'pct' : 'label'} align="left" />
+                    {hist && <Td value={isPct ? fmtPct(hv*100) : fmt(hv)} tipo={isPct ? 'pct' : 'hist'} />}
+                    <Td value={isPct ? fmtPct(rv*100) : fmt(rv)} tipo={isPct ? 'pct' : isSubtotal ? 'subtotal' : 'real'} />
+                    {ppto && <Td value={isPct ? fmtPct(pv*100) : fmt(pv)} tipo={isPct ? 'pct' : 'ppto'} />}
+                    {hist && !isPct && <TdDif abs={rv - hv} rel={hv !== 0 ? (rv-hv)/Math.abs(hv) : 0} />}
+                    {hist && isPct && <><Td value="-" /><Td value="-" /></>}
+                    {ppto && !isPct && <TdDif abs={rv - pv} rel={pv !== 0 ? (rv-pv)/Math.abs(pv) : 0} />}
+                    {ppto && isPct && <><Td value="-" /><Td value="-" /></>}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      );
+    }
+
+    function PygEvol({ evol, evolHist, evolPpto }) {
+      if (!evol) return <div className="text-gray-400 italic text-sm p-4">Sin datos cargados</div>;
+      const evolC     = calcPygPct(evol);
+      const evolHistC = evolHist ? calcPygPct(evolHist) : null;
+
+      return (
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse text-xs">
+            <thead>
+              <tr className="bg-gray-800 text-white">
+                <th className="px-3 py-2 text-left sticky left-0 bg-gray-800 w-52">Cuenta P&G — Evolucion</th>
+                {MESES_LABEL.map(m => <th key={m} className="px-2 py-2 text-right text-orange-300 min-w-16">{m}</th>)}
+                <th className="px-2 py-2 text-right text-orange-300">TOTAL</th>
+              </tr>
+            </thead>
+            <tbody>
+              {PYG_LINES.map(line => {
+                const isPct = line.tipo === 'pct';
+                const isSubtotal = line.tipo === 'subtotal' || line.tipo === 'total';
+                const rowClass = isSubtotal ? 'border-t-2 border-gray-300 bg-gray-50' : '';
+                const vals = evolC?.[line.key] || Array(12).fill(0);
+                const total = isPct ? null : vals.reduce((a,b) => a+b, 0);
+
+                return (
+                  <tr key={line.key} className={'hover:bg-yellow-50 border-b border-gray-100 ' + rowClass}>
+                    <td className={'px-3 py-1 text-sm sticky left-0 bg-white ' + (isSubtotal ? 'font-bold bg-gray-50' : isPct ? 'italic text-gray-500' : 'font-medium text-gray-700')}>
+                      {line.label}
+                    </td>
+                    {vals.map((v, i) => (
+                      <Td key={i} value={isPct ? fmtPct(v*100) : fmt(v)} tipo={isPct ? 'pct' : 'real'} />
+                    ))}
+                    <Td value={isPct ? '' : fmt(total)} tipo={isSubtotal ? 'subtotal' : 'real'} />
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      );
+    }
+
+    // ─── VISTA BS ─────────────────────────────────────────────────────────────
+
+    function BsTable({ hist, real, ppto, titulo }) {
+      if (!real) return <div className="text-gray-400 italic text-sm p-4">Sin datos cargados</div>;
+      return (
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse text-sm">
+            <thead>
+              <tr className="bg-gray-800 text-white">
+                <th className="px-3 py-2 text-left w-72">Balance de Situacion</th>
+                <th className="px-3 py-2 text-right text-blue-300">Historico</th>
+                <th className="px-3 py-2 text-right text-orange-300">Real</th>
+                {ppto && <th className="px-3 py-2 text-right text-green-300">Presupuesto</th>}
+                <th className="px-3 py-2 text-right text-xs" colSpan={2}>Dif. Real/Hist</th>
+                {ppto && <th className="px-3 py-2 text-right text-xs" colSpan={2}>Dif. Real/Ppto</th>}
+              </tr>
+              <tr className="bg-gray-700 text-gray-300 text-xs">
+                <th className="px-3 py-1">Datos en miles €</th>
+                <th className="px-3 py-1 text-right">{titulo?.hist || ''}</th>
+                <th className="px-3 py-1 text-right">{titulo?.real || ''}</th>
+                {ppto && <th className="px-3 py-1 text-right">{titulo?.ppto || ''}</th>}
+                <th className="px-3 py-1 text-right">Abs.</th>
+                <th className="px-3 py-1 text-right">Rel.</th>
+                {ppto && <><th className="px-3 py-1 text-right">Abs.</th><th className="px-3 py-1 text-right">Rel.</th></>}
+              </tr>
+            </thead>
+            <tbody>
+              {BS_LINES.map(line => {
+                const hv = hist?.[line.key] ?? 0;
+                const rv = real?.[line.key] ?? 0;
+                const pv = ppto?.[line.key] ?? 0;
+                const isTop = line.nivel === 0;
+                const isSub = line.nivel === 1;
+                const rowClass = isTop ? 'bg-gray-200 border-t-2 border-gray-400' : isSub ? 'bg-gray-50 border-t border-gray-200' : '';
+
+                return (
+                  <tr key={line.key} className={'hover:bg-yellow-50 border-b border-gray-100 ' + rowClass}>
+                    <td className={'px-3 py-1.5 ' + (isTop ? 'font-bold text-gray-900' : isSub ? 'font-semibold text-gray-800' : 'text-gray-700 pl-6')}>
+                      {line.label}
+                    </td>
+                    <Td value={fmt(hv)} tipo="hist" />
+                    <Td value={fmt(rv)} tipo={isTop || isSub ? 'subtotal' : 'real'} />
+                    {ppto && <Td value={fmt(pv)} tipo="ppto" />}
+                    <TdDif abs={rv - hv} rel={hv !== 0 ? (rv-hv)/Math.abs(hv) : 0} positiveIsGood={line.grupo === 'activo'} />
+                    {ppto && <TdDif abs={rv - pv} rel={pv !== 0 ? (rv-pv)/Math.abs(pv) : 0} positiveIsGood={line.grupo === 'activo'} />}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      );
+    }
+
+    function BsEvol({ evol, bsHist }) {
+      if (!evol) return <div className="text-gray-400 italic text-sm p-4">Sin datos cargados</div>;
+      const topLines = BS_LINES.filter(l => l.nivel <= 1);
+      return (
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse text-xs">
+            <thead>
+              <tr className="bg-gray-800 text-white">
+                <th className="px-3 py-2 text-left sticky left-0 bg-gray-800 w-52">Balance — Evolucion</th>
+                <th className="px-2 py-2 text-right text-blue-300 min-w-16">dic-25</th>
+                {MESES_LABEL.map(m => <th key={m} className="px-2 py-2 text-right text-orange-300 min-w-16">{m}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {BS_LINES.map(line => {
+                const isTop = line.nivel === 0;
+                const isSub = line.nivel === 1;
+                const rowClass = isTop ? 'bg-gray-200 border-t-2 border-gray-400' : isSub ? 'bg-gray-50' : '';
+                const hv = bsHist?.[line.key] ?? 0;
+                const vals = evol?.[line.key] || Array(12).fill(0);
+                return (
+                  <tr key={line.key} className={'hover:bg-yellow-50 border-b border-gray-100 ' + rowClass}>
+                    <td className={'px-3 py-1 sticky left-0 bg-inherit ' + (isTop ? 'font-bold' : isSub ? 'font-semibold' : 'pl-5 text-gray-600')}>
+                      {line.label}
+                    </td>
+                    <Td value={fmt(hv)} tipo="hist" />
+                    {vals.map((v, i) => <Td key={i} value={fmt(v)} tipo={isTop || isSub ? 'subtotal' : 'real'} />)}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      );
+    }
+
+    // ─── VISTA CF ─────────────────────────────────────────────────────────────
+
+    const CF_LINES = [
+      { key:'ebitdaPF',  label:'EBITDA PF',                            tipo:'subtotal' },
+      { key:'noRec',     label:'No recurrentes',                        tipo:'coste' },
+      { key:'dtoComercial', label:'Ingresos/Gtos Dto. Comercial',       tipo:'otro' },
+      { key:'ebitda',    label:'EBITDA',                               tipo:'subtotal' },
+      { key:'dExist',    label:'Existencias',                          tipo:'wc' },
+      { key:'dClientes', label:'Clientes',                             tipo:'wc' },
+      { key:'dProv',     label:'Proveedores/Acreedores',               tipo:'wc' },
+      { key:'dPeriodif', label:'Periodificaciones',                    tipo:'wc' },
+      { key:'totalWC',   label:'Total Variacion Circulante',           tipo:'subtotal' },
+      { key:'dAAPP',     label:'AAPP',                                 tipo:'otro' },
+      { key:'fcOp',      label:'Flujo de caja operativo',              tipo:'total' },
+      { key:'capexVal',  label:'Capex',                                tipo:'coste' },
+      { key:'fcDisp',    label:'FC disponible para el servicio deuda', tipo:'subtotal' },
+      { key:'gtosFin',   label:'Total Gastos/Ingresos Financieros',    tipo:'coste' },
+      { key:'fcRepago',  label:'FC disponible para repago deuda',      tipo:'subtotal' },
+      { key:'varCaja',   label:'Variacion de Caja',                    tipo:'subtotal' },
+      { key:'tesPrev',   label:'Caja BoP',                             tipo:'otro' },
+      { key:'tesCurr',   label:'Caja EoP',                             tipo:'total' },
+    ];
+
+    function CfTable({ cf, titulo }) {
+      if (!cf) return <div className="text-gray-400 italic text-sm p-4">Sin datos o datos insuficientes para calcular CF</div>;
+      return (
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse text-sm">
+            <thead>
+              <tr className="bg-gray-800 text-white">
+                <th className="px-3 py-2 text-left w-72">Cash Flow</th>
+                <th className="px-3 py-2 text-right text-orange-300">{titulo || 'Real'}</th>
+              </tr>
+              <tr className="bg-gray-700 text-gray-300 text-xs">
+                <th className="px-3 py-1">Datos en miles €</th>
+                <th className="px-3 py-1 text-right"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {CF_LINES.map(line => {
+                const v = cf[line.key] ?? 0;
+                const isTop = line.tipo === 'total';
+                const isSub = line.tipo === 'subtotal';
+                const rowClass = isTop ? 'bg-gray-200 border-t-2 border-gray-400' : isSub ? 'bg-gray-50 border-t border-gray-200' : '';
+                return (
+                  <tr key={line.key} className={'hover:bg-yellow-50 border-b border-gray-100 ' + rowClass}>
+                    <td className={'px-3 py-1.5 ' + (isTop ? 'font-bold' : isSub ? 'font-semibold' : 'text-gray-700')}>
+                      {line.label}
+                    </td>
+                    <Td value={fmt(v)} tipo={isTop ? 'total' : isSub ? 'subtotal' : 'real'} />
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      );
+    }
+
+    // ─── ZOOM: WC ─────────────────────────────────────────────────────────────
+
+    function WcTable({ bsReal, bsHist }) {
+      if (!bsReal) return <div className="text-gray-400 italic text-sm p-4">Sin datos de Balance cargados</div>;
+      const wcKeys = [
+        { key:'existencias', label:'Existencias' },
+        { key:'clientes',    label:'Clientes' },
+        { key:'proveedores', label:'Proveedores' },
+      ];
+      function wcTotal(m) {
+        return (bsReal.existencias?.[m]||0) + (bsReal.clientes?.[m]||0) - (bsReal.proveedores?.[m]||0);
+      }
+      const histWC = (bsHist?.existencias||0) + (bsHist?.clientes||0) - (bsHist?.proveedores||0);
+
+      return (
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse text-xs">
+            <thead>
+              <tr className="bg-gray-800 text-white">
+                <th className="px-3 py-2 text-left sticky left-0 bg-gray-800">Capital Circulante</th>
+                <th className="px-2 py-2 text-right text-blue-300">dic-25</th>
+                {MESES_LABEL.map(m => <th key={m} className="px-2 py-2 text-right text-orange-300 min-w-16">{m}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {wcKeys.map(wc => (
+                <tr key={wc.key} className="hover:bg-yellow-50 border-b border-gray-100">
+                  <td className="px-3 py-1 sticky left-0 bg-white font-medium text-gray-700">{wc.label}</td>
+                  <Td value={fmt(bsHist?.[wc.key] || 0)} tipo="hist" />
+                  {(bsReal[wc.key] || Array(12).fill(0)).map((v,i) => <Td key={i} value={fmt(v)} tipo="real" />)}
+                </tr>
+              ))}
+              <tr className="bg-gray-100 border-t-2 border-gray-300 font-bold">
+                <td className="px-3 py-1.5 sticky left-0 bg-gray-100 font-bold text-gray-900">Capital Circulante (Exist+Cli-Prov)</td>
+                <Td value={fmt(histWC)} tipo="hist" />
+                {MESES.map((_, i) => <Td key={i} value={fmt(wcTotal(i))} tipo="subtotal" />)}
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      );
+    }
+
+    // ─── ZOOM GENERICO (NoRec, OPEX, CAPEX, DFN) ──────────────────────────────
+
+    function ZoomTable({ data, title }) {
+      if (!data || Object.keys(data).length === 0)
+        return <div className="text-gray-400 italic text-sm p-4">Sin datos cargados</div>;
+      const keys = Object.keys(data);
+      return (
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse text-xs">
+            <thead>
+              <tr className="bg-gray-800 text-white">
+                <th className="px-3 py-2 text-left sticky left-0 bg-gray-800 min-w-48">{title}</th>
+                {MESES_LABEL.map(m => <th key={m} className="px-2 py-2 text-right text-orange-300 min-w-16">{m}</th>)}
+                <th className="px-2 py-2 text-right text-orange-300">YTD</th>
+              </tr>
+            </thead>
+            <tbody>
+              {keys.map(k => {
+                const vals = data[k] || Array(12).fill(0);
+                const total = vals.reduce((a,b) => a+b, 0);
+                return (
+                  <tr key={k} className="hover:bg-yellow-50 border-b border-gray-100">
+                    <td className="px-3 py-1 sticky left-0 bg-white text-gray-700">{k}</td>
+                    {vals.map((v,i) => <Td key={i} value={v !== 0 ? fmt(v) : '-'} tipo="real" />)}
+                    <Td value={fmt(total)} tipo="subtotal" />
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      );
+    }
+
+    // ─── PANTALLA DE CONFIGURACION ─────────────────────────────────────────────
+
+    function ConfigScreen({ data, onLoad, onClear }) {
+      const configItems = [
+        { key:'pygHist',   label:'PyG Historico 2025 (ene-25 a dic-25)',  color:'blue',   sheet:'PyG', mesLabels: MESES_HIST },
+        { key:'pygPpto',   label:'PyG Presupuesto 2026 (ene-26 a dic-26)', color:'green',  sheet:'PyG', mesLabels: MESES_LABEL },
+        { key:'bsHist',    label:'BS Historico (cierre dic-25)',           color:'blue',   sheet:'BS',  type:'bs' },
+        { key:'bsPpto',    label:'BS Presupuesto 2026 (mensual)',          color:'green',  sheet:'BS',  type:'bs' },
+        { key:'opexHist',  label:'OPEX Historico 2025',                   color:'blue',   sheet:'OPEX', mesLabels: MESES_HIST },
+        { key:'opexPpto',  label:'OPEX Presupuesto 2026',                 color:'green',  sheet:'OPEX', mesLabels: MESES_LABEL },
+        { key:'norecPpto', label:'No Recurrentes Presupuesto 2026',       color:'green',  sheet:'NoRec', mesLabels: MESES_LABEL },
+      ];
+
+      const monthlyItems = [
+        { key:'pygReal',   label:'PyG Real/Estimado 2026 — Evol mensual', color:'orange', sheet:'PyG', mesLabels: MESES_LABEL },
+        { key:'bsReal',    label:'BS Real 2026 — Evol mensual',           color:'orange', sheet:'BS',  type:'bs' },
+        { key:'norecReal', label:'No Recurrentes Real 2026',              color:'orange', sheet:'NoRec', mesLabels: MESES_LABEL },
+        { key:'opexReal',  label:'OPEX Real 2026',                        color:'orange', sheet:'OPEX', mesLabels: MESES_LABEL },
+        { key:'capexReal', label:'CAPEX Real 2026',                       color:'orange', sheet:'CAPEX', mesLabels: MESES_LABEL },
+        { key:'dfnReal',   label:'DFN Real 2026',                         color:'orange', sheet:'DFN',  mesLabels: MESES_LABEL },
+      ];
+
+      function handleLoaded(wb, storageKey) {
+        const item = [...configItems, ...monthlyItems].find(i => i.key === storageKey);
+        if (!item) return;
+        let parsed = null;
+        if (item.type === 'bs') {
+          parsed = parseBsEvol(wb, item.sheet);
+          if (!parsed) {
+            // Intenta encontrar la hoja BS en el libro
+            const bsSheet = wb.SheetNames.find(n => n.toLowerCase().includes('bs') || n.toLowerCase().includes('balance'));
+            if (bsSheet) parsed = parseBsEvol(wb, bsSheet);
+          }
+        } else {
+          // Busca la hoja indicada o la primera disponible
+          const sheetName = wb.SheetNames.includes(item.sheet)
+            ? item.sheet
+            : wb.SheetNames.find(n => n.toLowerCase().includes(item.sheet.toLowerCase()))
+            || wb.SheetNames[0];
+          parsed = parsePygEvol(wb, sheetName, item.mesLabels);
+          if (!parsed && (item.key.includes('norec') || item.key.includes('opex') || item.key.includes('capex') || item.key.includes('dfn'))) {
+            parsed = parseMonthlySheet(wb, sheetName, item.mesLabels);
+          }
+        }
+        if (!parsed) { alert('No se pudo leer el archivo. Verifica que la estructura coincide con la plantilla.'); return; }
+        saveToStorage(STORAGE_KEYS[storageKey], parsed);
+        onLoad(storageKey, parsed);
+      }
+
+      return (
+        <div className="space-y-6">
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+            <h3 className="font-bold text-blue-800 mb-3">Configuracion (subida unica — se guarda en el navegador)</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+              {configItems.map(item => (
+                <UploadButton key={item.key} label={item.label} storageKey={item.key}
+                  color={item.color} loaded={!!data[item.key]} onLoaded={handleLoaded} />
+              ))}
+            </div>
+          </div>
+
+          <div className="bg-orange-50 border border-orange-200 rounded-lg p-4">
+            <h3 className="font-bold text-orange-800 mb-3">Datos mensuales (actualizar cada mes)</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+              {monthlyItems.map(item => (
+                <UploadButton key={item.key} label={item.label} storageKey={item.key}
+                  color={item.color} loaded={!!data[item.key]} onLoaded={handleLoaded} />
+              ))}
+            </div>
+          </div>
+
+          <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-red-700">Borrar todos los datos guardados en este navegador</span>
+              <button onClick={onClear}
+                className="text-sm bg-red-600 text-white px-3 py-1 rounded hover:bg-red-700">
+                Borrar todo
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ─── APP PRINCIPAL ─────────────────────────────────────────────────────────
+
+    function App() {
+      const [seccion, setSeccion] = useState('config');
+      const [mesActivo, setMesActivo] = useState(0); // 0=ene, 11=dic
+      const [empresa, setEmpresa] = useState('Consolidado');
+      const [tabPyg, setTabPyg] = useState('MES');
+      const [tabBs, setTabBs]   = useState('YTD');
+      const [tabCf, setTabCf]   = useState('MES');
+      const [tabZoom, setTabZoom] = useState('NoRec');
+
+      // Estado de datos
+      const [appData, setAppData] = useState(() => {
+        const d = {};
+        Object.entries(STORAGE_KEYS).forEach(([k, sk]) => { d[k] = loadFromStorage(sk); });
+        return d;
+      });
+
+      function handleLoad(key, parsed) {
+        setAppData(prev => ({ ...prev, [key]: parsed }));
+      }
+
+      function handleClearAll() {
+        if (!confirm('Borrar todos los datos guardados. Esta accion no se puede deshacer.')) return;
+        Object.values(STORAGE_KEYS).forEach(sk => clearStorage(sk));
+        setAppData({});
+      }
+
+      // Datos derivados para el mes activo
+      const pygRealMes  = appData.pygReal  ? Object.fromEntries(PYG_LINES.map(l => [l.key, appData.pygReal?.[l.key]?.[mesActivo] ?? 0])) : null;
+      const pygHistMes  = appData.pygHist  ? Object.fromEntries(PYG_LINES.map(l => [l.key, appData.pygHist?.[l.key]?.[mesActivo] ?? 0])) : null;
+      const pygPptoMes  = appData.pygPpto  ? Object.fromEntries(PYG_LINES.map(l => [l.key, appData.pygPpto?.[l.key]?.[mesActivo] ?? 0])) : null;
+
+      // YTD: suma de ene hasta mes activo
+      const pygRealYTD  = appData.pygReal  ? Object.fromEntries(PYG_LINES.map(l => [l.key, ytd(appData.pygReal?.[l.key], mesActivo)])) : null;
+      const pygHistYTD  = appData.pygHist  ? Object.fromEntries(PYG_LINES.map(l => [l.key, ytd(appData.pygHist?.[l.key], mesActivo)])) : null;
+      const pygPptoYTD  = appData.pygPpto  ? Object.fromEntries(PYG_LINES.map(l => [l.key, ytd(appData.pygPpto?.[l.key], mesActivo)])) : null;
+
+      // BS YTD: valor del mes activo
+      const bsRealMes   = appData.bsReal?.real  ? Object.fromEntries(BS_LINES.map(l => [l.key, appData.bsReal.real?.[l.key]?.[mesActivo] ?? 0])) : null;
+      const bsHistMes   = appData.bsReal?.hist  || appData.bsHist  || null;
+      const bsPptoMes   = appData.bsPpto?.real  ? Object.fromEntries(BS_LINES.map(l => [l.key, appData.bsPpto.real?.[l.key]?.[mesActivo] ?? 0])) : null;
+
+      // CF mes
+      const cfMes = calcCF(appData.pygReal, appData.bsReal?.real, appData.bsReal?.hist || appData.bsHist, appData.capexReal, appData.dfnReal, mesActivo);
+
+      // CF YTD (suma mes a mes)
+      function cfYtd() {
+        if (!appData.pygReal || !appData.bsReal?.real) return null;
+        const cfArr = MESES.map((_, m) => calcCF(appData.pygReal, appData.bsReal?.real, appData.bsReal?.hist || appData.bsHist, appData.capexReal, appData.dfnReal, m));
+        const sum = {};
+        CF_LINES.forEach(l => { sum[l.key] = cfArr.slice(0, mesActivo+1).reduce((a, cf) => a + (cf?.[l.key] || 0), 0); });
+        // Caja EoP y BoP no se suman, son valores de stock
+        if (cfMes) { sum.tesCurr = cfMes.tesCurr; sum.tesPrev = cfArr[0]?.tesPrev || 0; }
+        return sum;
+      }
+
+      const mesLabel = MESES_LABEL[mesActivo];
+      const dataLoaded = !!appData.pygReal;
+
+      const SECCIONES = [
+        { id:'config', label:'Configuracion' },
+        { id:'pyg',    label:'PyG' },
+        { id:'bs',     label:'Balance' },
+        { id:'cf',     label:'Cash Flow' },
+        { id:'zoom',   label:'Detalle' },
+      ];
+
+      return (
+        <div className="min-h-screen bg-gray-100">
+          {/* Header */}
+          <div className="bg-gray-900 text-white px-6 py-3 flex items-center justify-between shadow-lg">
+            <div className="flex items-center gap-4">
+              <span className="font-bold text-lg tracking-wide">REPORTING AGROSANA</span>
+              <span className="text-gray-400 text-sm">2026</span>
+            </div>
+            <div className="flex items-center gap-4">
+              {/* Selector de mes */}
+              <div className="flex items-center gap-2">
+                <span className="text-gray-400 text-sm">Periodo:</span>
+                <select value={mesActivo} onChange={e => setMesActivo(Number(e.target.value))}
+                  className="bg-gray-700 text-white border border-gray-600 rounded px-2 py-1 text-sm">
+                  {MESES_LABEL.map((m,i) => <option key={i} value={i}>{m}</option>)}
+                </select>
+              </div>
+              {/* Selector empresa */}
+              <div className="flex items-center gap-2">
+                <span className="text-gray-400 text-sm">Empresa:</span>
+                <select value={empresa} onChange={e => setEmpresa(e.target.value)}
+                  className="bg-gray-700 text-white border border-gray-600 rounded px-2 py-1 text-sm">
+                  {EMPRESAS.map(e => <option key={e} value={e}>{e}</option>)}
+                </select>
+              </div>
+              {/* Estado de carga */}
+              {dataLoaded
+                ? <Badge color="green">Datos cargados</Badge>
+                : <Badge color="red">Sin datos</Badge>}
+            </div>
+          </div>
+
+          {/* Nav */}
+          <div className="bg-white shadow-sm border-b border-gray-200 px-6">
+            <div className="flex gap-0">
+              {SECCIONES.map(s => (
+                <button key={s.id} onClick={() => setSeccion(s.id)}
+                  className={'px-5 py-3 text-sm font-medium border-b-2 transition-colors ' +
+                    (seccion === s.id
+                      ? 'border-blue-600 text-blue-700'
+                      : 'border-transparent text-gray-500 hover:text-gray-700')}>
+                  {s.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Contenido */}
+          <div className="p-6 max-w-screen-xl mx-auto">
+            {seccion === 'config' && (
+              <div>
+                <SectionTitle>Configuracion y carga de datos</SectionTitle>
+                <ConfigScreen data={appData} onLoad={handleLoad} onClear={handleClearAll} />
+              </div>
+            )}
+
+            {seccion === 'pyg' && (
+              <div>
+                <div className="flex items-center justify-between mb-4">
+                  <SectionTitle>Cuenta de Perdidas y Ganancias — {empresa}</SectionTitle>
+                </div>
+                <TabBar tabs={['MES','YTD','EVOL']} active={tabPyg} onChange={setTabPyg} />
+                {tabPyg === 'MES' && <PygTable
+                  hist={pygHistMes} real={pygRealMes} ppto={pygPptoMes}
+                  titulo={{ hist: MESES_HIST[mesActivo], real: mesLabel, ppto: mesLabel }} />}
+                {tabPyg === 'YTD' && <PygTable
+                  hist={pygHistYTD} real={pygRealYTD} ppto={pygPptoYTD}
+                  titulo={{ hist: 'YTD ' + MESES_HIST[mesActivo], real: 'YTD ' + mesLabel, ppto: 'YTD ' + mesLabel }} />}
+                {tabPyg === 'EVOL' && <PygEvol evol={appData.pygReal} evolHist={appData.pygHist} evolPpto={appData.pygPpto} />}
+              </div>
+            )}
+
+            {seccion === 'bs' && (
+              <div>
+                <div className="flex items-center justify-between mb-4">
+                  <SectionTitle>Balance de Situacion — {empresa}</SectionTitle>
+                </div>
+                <TabBar tabs={['YTD','EVOL']} active={tabBs} onChange={setTabBs} />
+                {tabBs === 'YTD' && <BsTable
+                  hist={bsHistMes} real={bsRealMes} ppto={bsPptoMes}
+                  titulo={{ hist: 'dic-25', real: mesLabel, ppto: mesLabel }} />}
+                {tabBs === 'EVOL' && <BsEvol evol={appData.bsReal?.real} bsHist={appData.bsReal?.hist || appData.bsHist} />}
+              </div>
+            )}
+
+            {seccion === 'cf' && (
+              <div>
+                <div className="flex items-center justify-between mb-4">
+                  <SectionTitle>Cash Flow — {empresa}</SectionTitle>
+                </div>
+                <TabBar tabs={['MES','YTD']} active={tabCf} onChange={setTabCf} />
+                {tabCf === 'MES' && <CfTable cf={cfMes} titulo={'Mes ' + mesLabel} />}
+                {tabCf === 'YTD' && <CfTable cf={cfYtd()} titulo={'YTD ' + mesLabel} />}
+              </div>
+            )}
+
+            {seccion === 'zoom' && (
+              <div>
+                <SectionTitle>Detalle — {empresa}</SectionTitle>
+                <TabBar tabs={['NoRec','OPEX','CAPEX','DFN','WC']} active={tabZoom} onChange={setTabZoom} />
+                {tabZoom === 'NoRec'  && <ZoomTable data={appData.norecReal} title="Gastos No Recurrentes Real" />}
+                {tabZoom === 'OPEX'   && <ZoomTable data={appData.opexReal}  title="OPEX Real" />}
+                {tabZoom === 'CAPEX'  && <ZoomTable data={appData.capexReal} title="CAPEX Real" />}
+                {tabZoom === 'DFN'    && <ZoomTable data={appData.dfnReal}   title="Deuda Financiera Neta" />}
+                {tabZoom === 'WC'     && <WcTable   bsReal={appData.bsReal?.real} bsHist={appData.bsReal?.hist || appData.bsHist} />}
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
