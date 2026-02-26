@@ -370,11 +370,17 @@
     // ─── CALCULOS ──────────────────────────────────────────────────────────────
 
     // Calcula los % del PyG a partir de ventas
+    // Soporta tanto arrays (vista EVOL) como numeros simples (vista MES/YTD)
     function calcPygPct(pyg) {
       if (!pyg || !pyg.ventas) return pyg;
       const out = { ...pyg };
-      out.pct_mb     = pyg.ventas.map((v, i) => v ? (pyg.margen?.[i] || 0) / v : 0);
-      out.pct_ebitda = pyg.ventas.map((v, i) => v ? (pyg.ebitda?.[i] || 0) / v : 0);
+      if (Array.isArray(pyg.ventas)) {
+        out.pct_mb     = pyg.ventas.map((v, i) => v ? (pyg.margen?.[i]  || 0) / v : 0);
+        out.pct_ebitda = pyg.ventas.map((v, i) => v ? (pyg.ebitda?.[i]  || 0) / v : 0);
+      } else {
+        out.pct_mb     = pyg.ventas ? (pyg.margen  || 0) / pyg.ventas : 0;
+        out.pct_ebitda = pyg.ventas ? (pyg.ebitda  || 0) / pyg.ventas : 0;
+      }
       return out;
     }
 
