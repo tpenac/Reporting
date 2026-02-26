@@ -106,7 +106,8 @@
       return parseFloat(s) || 0;
     }
 
-    // Lee una hoja de xlsx y devuelve array de arrays (valores en texto)
+    // Lee una hoja de xlsx y devuelve array de arrays
+    // Usa cell.w (texto formateado) para que las fechas como "dic.-25" sean legibles
     function sheetToArray(ws) {
       const ref = ws['!ref'];
       if (!ref) return [];
@@ -116,7 +117,11 @@
         const row = [];
         for (let c = range.s.c; c <= range.e.c; c++) {
           const cell = ws[XLSX.utils.encode_cell({ r, c })];
-          row.push(cell ? (cell.v !== undefined ? cell.v : '') : '');
+          if (!cell) { row.push(''); continue; }
+          // Prioridad: texto formateado (w) > valor raw (v)
+          if (cell.w !== undefined) row.push(cell.w);
+          else if (cell.v !== undefined) row.push(cell.v);
+          else row.push('');
         }
         rows.push(row);
       }
@@ -274,47 +279,68 @@
     // Devuelve: { hist: {key: val}, real: {key: [v1..v12]} }
     function parseBsEvol(wb, sheetName) {
       const ws = wb.Sheets[sheetName];
-      if (!ws) return null;
+      if (!ws) { console.log('[parseBsEvol] Hoja no encontrada:', sheetName); return null; }
       const rows = sheetToArray(ws);
-      // Busca la fila con "dic" y "ene" consecutivos
+      console.log('[parseBsEvol] Total filas:', rows.length);
+
+      // Busca la fila que contenga al menos 2 meses distintos (ene, feb, dic, etc.)
       let headerIdx = -1;
-      for (let r = 0; r < rows.length; r++) {
-        const hasEnero = rows[r].some(v => String(v).toLowerCase().includes('ene'));
-        const hasDic   = rows[r].some(v => String(v).toLowerCase().includes('dic'));
-        if (hasEnero && hasDic) { headerIdx = r; break; }
+      for (let r = 0; r < Math.min(rows.length, 20); r++) {
+        const rowStr = rows[r].map(v => String(v).toLowerCase()).join(' ');
+        const mesesEncontrados = MESES.filter(m => rowStr.includes(m)).length;
+        if (mesesEncontrados >= 2) { headerIdx = r; break; }
       }
+      console.log('[parseBsEvol] headerIdx:', headerIdx, '| fila:', headerIdx >= 0 ? rows[headerIdx].slice(0,10) : 'N/A');
       if (headerIdx < 0) return null;
 
-      // Localiza columna hist (dic-25) y columnas mensuales (ene-26..dic-26)
+      // Localiza columna hist (dic anterior) y columnas mensuales (ene-26..dic-26)
       let histCol = -1;
       const monthCols = {};
       for (let c = 0; c < rows[headerIdx].length; c++) {
         const v = String(rows[headerIdx][c]).toLowerCase().trim();
-        if (v.includes('dic') && (v.includes('25') || v.includes('anterior'))) histCol = c;
+        // Hist: columna dic del ano anterior (puede ser dic-25, dic.- 25, diciembre 2025, etc.)
+        if (v.includes('dic') && (v.includes('25') || v.includes('anterior') || v.includes('2025'))) {
+          if (histCol < 0) histCol = c;
+        }
+        // Meses actuales: busca cada mes de 2026
         MESES.forEach((m, idx) => {
-          if (v.includes(m) && (v.includes('26') || idx === 0)) {
-            if (monthCols[idx] === undefined) monthCols[idx] = c;
-          }
+          if (monthCols[idx] !== undefined) return;
+          const matchesMes = v.startsWith(m) || v.includes('-' + m) || v.includes(m + '-') || v.includes(m + '.');
+          const matches26  = v.includes('26') || v.includes('2026');
+          if (matchesMes && (matches26 || idx <= 1)) monthCols[idx] = c;
         });
       }
-      if (histCol < 0) histCol = rows[headerIdx].findIndex(v => String(v).toLowerCase().includes('dic'));
+
+      // Fallback: si no encontro histCol, usa la primera columna con numeros tras el label
+      if (histCol < 0) {
+        for (let c = 1; c < rows[headerIdx].length; c++) {
+          const v = String(rows[headerIdx][c]).toLowerCase();
+          if (v.includes('hist') || v.includes('anterior') || v.includes('dic')) { histCol = c; break; }
+        }
+      }
+      console.log('[parseBsEvol] histCol:', histCol, '| monthCols:', monthCols);
+
       const labelCol = findLabelCol(rows, headerIdx);
+      console.log('[parseBsEvol] labelCol:', labelCol);
 
       const hist = {};
       const real = {};
       BS_LINES.forEach(l => { hist[l.key] = 0; real[l.key] = Array(12).fill(0); });
 
+      let matchedLines = 0;
       for (let r = headerIdx + 1; r < rows.length; r++) {
         const label = String(rows[r][labelCol] || '').trim();
         if (!label) continue;
         const key = matchBsLine(label);
         if (!key) continue;
+        matchedLines++;
         if (histCol >= 0) hist[key] = parseNum(rows[r][histCol]);
         MESES.forEach((_, idx) => {
           const c = monthCols[idx];
           if (c !== undefined) real[key][idx] = parseNum(rows[r][c]);
         });
       }
+      console.log('[parseBsEvol] Lineas BS mapeadas:', matchedLines);
       return { hist, real };
     }
 
@@ -861,12 +887,30 @@
         const item = [...configItems, ...monthlyItems].find(i => i.key === storageKey);
         if (!item) return;
         let parsed = null;
+
         if (item.type === 'bs') {
-          parsed = parseBsEvol(wb, item.sheet);
-          if (!parsed) {
-            // Intenta encontrar la hoja BS en el libro
-            const bsSheet = wb.SheetNames.find(n => n.toLowerCase().includes('bs') || n.toLowerCase().includes('balance'));
-            if (bsSheet) parsed = parseBsEvol(wb, bsSheet);
+          // Busca la mejor hoja BS disponible
+          const bsEvol = wb.SheetNames.find(n => /bs.?evol/i.test(n));
+          const bsYtd  = wb.SheetNames.find(n => /bs.?ytd/i.test(n) || /balance/i.test(n));
+          const bsAny  = wb.SheetNames.find(n => /bs/i.test(n));
+          const sheetName = bsEvol || bsYtd || bsAny || wb.SheetNames[0];
+          console.log('[BS] Hoja usada:', sheetName, '| Hojas disponibles:', wb.SheetNames);
+          const raw = parseBsEvol(wb, sheetName);
+          console.log('[BS] Resultado parser:', raw);
+          if (!raw) {
+            alert('No se pudo leer el Balance. Hoja detectada: "' + sheetName + '". Revisa que tenga columnas de meses.');
+            return;
+          }
+          // Segun la clave, extraemos la parte correcta
+          if (storageKey === 'bsHist') {
+            // Solo el historico dic-25: objeto plano { key: valor }
+            parsed = raw.hist;
+          } else if (storageKey === 'bsPpto') {
+            // Solo los 12 meses de presupuesto: { key: [v1..v12] }
+            parsed = raw.real;
+          } else {
+            // bsReal: estructura completa { hist, real }
+            parsed = raw;
           }
         } else {
           // Busca la hoja indicada o la primera disponible
@@ -874,12 +918,18 @@
             ? item.sheet
             : wb.SheetNames.find(n => n.toLowerCase().includes(item.sheet.toLowerCase()))
             || wb.SheetNames[0];
+          console.log('[PyG/Other] Hoja usada:', sheetName, '| Clave:', storageKey);
           parsed = parsePygEvol(wb, sheetName, item.mesLabels);
           if (!parsed && (item.key.includes('norec') || item.key.includes('opex') || item.key.includes('capex') || item.key.includes('dfn'))) {
             parsed = parseMonthlySheet(wb, sheetName, item.mesLabels);
           }
+          console.log('[PyG/Other] Parsed keys:', parsed ? Object.keys(parsed) : 'null');
         }
-        if (!parsed) { alert('No se pudo leer el archivo. Verifica que la estructura coincide con la plantilla.'); return; }
+
+        if (!parsed || (typeof parsed === 'object' && Object.keys(parsed).length === 0)) {
+          alert('No se pudo leer el archivo. Hoja buscada: "' + item.sheet + '".\nHojas encontradas: ' + wb.SheetNames.join(', '));
+          return;
+        }
         saveToStorage(STORAGE_KEYS[storageKey], parsed);
         onLoad(storageKey, parsed);
       }
