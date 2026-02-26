@@ -1,0 +1,13 @@
+# Archivos temporales
+~$*
+*.tmp
+*.bak
+Thumbs.db
+.DS_Store
+
+# Archivos de datos Excel (no se suben al repo)
+*.xlsx
+*.xls
+
+# Excepciones (si hubiera plantillas de ejemplo a incluir)
+# !plantilla_ejemplo.xlsx
