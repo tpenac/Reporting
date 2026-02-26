@@ -170,25 +170,41 @@
     }
 
     // Detecta la columna de cada mes en la fila de cabecera
+    // Requiere que el año este en la misma celda para no confundir ene-25 con ene-26
     function findMonthCols(headerRow, mesLabels) {
       const cols = {};
       mesLabels.forEach((label, idx) => {
-        const abbr = label.toLowerCase().replace('-','').substring(0,3);
+        const mes = label.substring(0, 3).toLowerCase(); // 'ene', 'feb', etc.
+        const yr  = label.indexOf('-') >= 0 ? label.substring(label.indexOf('-') + 1) : ''; // '26' o '25'
+        // Paso 1: busca celda que contenga el mes Y el año
         for (let c = 0; c < headerRow.length; c++) {
           const v = String(headerRow[c]).toLowerCase().trim();
-          if (v.includes(abbr)) { cols[idx] = c; break; }
+          if (v.includes(mes) && yr && (v.includes(yr) || v.includes('20' + yr))) {
+            cols[idx] = c; break;
+          }
+        }
+        // Paso 2 (fallback): solo mes, evitando columnas ya asignadas
+        if (cols[idx] === undefined) {
+          const usadas = new Set(Object.values(cols));
+          for (let c = 0; c < headerRow.length; c++) {
+            if (usadas.has(c)) continue;
+            const v = String(headerRow[c]).toLowerCase().trim();
+            if (v.startsWith(mes) || v === mes) { cols[idx] = c; break; }
+          }
         }
       });
       return cols;
     }
 
-    // Detecta la columna de conceptos (la columna con mas texto no vacia)
+    // Detecta la columna de conceptos (la columna con mas texto, solo en las primeras columnas)
+    // Limitamos a las primeras 10 columnas para evitar columnas auxiliares de la derecha
     function findLabelCol(rows, headerRow) {
       const counts = {};
-      for (let r = headerRow + 1; r < Math.min(rows.length, headerRow + 30); r++) {
-        for (let c = 0; c < rows[r].length; c++) {
+      const maxCol = 10;
+      for (let r = headerRow + 1; r < Math.min(rows.length, headerRow + 35); r++) {
+        for (let c = 0; c < Math.min(maxCol, rows[r].length); c++) {
           const v = String(rows[r][c]).trim();
-          if (v.length > 3 && isNaN(Number(v.replace(',','.')))) {
+          if (v.length > 3 && isNaN(Number(v.replace(/\./g,'').replace(',','.')))) {
             counts[c] = (counts[c] || 0) + 1;
           }
         }
@@ -919,17 +935,37 @@
             parsed = raw;
           }
         } else {
-          // Busca la hoja indicada o la primera disponible
-          const sheetName = wb.SheetNames.includes(item.sheet)
-            ? item.sheet
-            : wb.SheetNames.find(n => n.toLowerCase().includes(item.sheet.toLowerCase()))
-            || wb.SheetNames[0];
-          console.log('[PyG/Other] Hoja usada:', sheetName, '| Clave:', storageKey);
+          let sheetName;
+          // Para PyG: preferir siempre la hoja Evol (12 meses), no la MES ni YTD
+          if (item.key.startsWith('pyg')) {
+            sheetName = wb.SheetNames.find(n => /pyg.?evol/i.test(n))
+                     || wb.SheetNames.find(n => /pyg/i.test(n) && !/mes|ytd|ahl|vtz|alm/i.test(n))
+                     || wb.SheetNames.find(n => /pyg/i.test(n))
+                     || wb.SheetNames[0];
+          } else if (item.key.startsWith('norec')) {
+            sheetName = wb.SheetNames.find(n => /no.?rec/i.test(n) || /recurrente/i.test(n))
+                     || wb.SheetNames[0];
+          } else if (item.key.startsWith('opex')) {
+            sheetName = wb.SheetNames.find(n => /opex/i.test(n) || /explotaci/i.test(n))
+                     || wb.SheetNames[0];
+          } else if (item.key.startsWith('capex')) {
+            sheetName = wb.SheetNames.find(n => /capex/i.test(n))
+                     || wb.SheetNames[0];
+          } else if (item.key.startsWith('dfn')) {
+            sheetName = wb.SheetNames.find(n => /dfn/i.test(n) || /deuda/i.test(n))
+                     || wb.SheetNames[0];
+          } else {
+            sheetName = wb.SheetNames.includes(item.sheet)
+              ? item.sheet
+              : wb.SheetNames.find(n => n.toLowerCase().includes(item.sheet.toLowerCase()))
+              || wb.SheetNames[0];
+          }
+          console.log('[PyG/Other] Hoja usada:', sheetName, '| Clave:', storageKey, '| Hojas:', wb.SheetNames);
           parsed = parsePygEvol(wb, sheetName, item.mesLabels);
           if (!parsed && (item.key.includes('norec') || item.key.includes('opex') || item.key.includes('capex') || item.key.includes('dfn'))) {
             parsed = parseMonthlySheet(wb, sheetName, item.mesLabels);
           }
-          console.log('[PyG/Other] Parsed keys:', parsed ? Object.keys(parsed) : 'null');
+          console.log('[PyG/Other] Parsed keys:', parsed ? Object.keys(parsed) : 'null', '| ventas[0]:', parsed?.ventas?.[0]);
         }
 
         if (!parsed || (typeof parsed === 'object' && Object.keys(parsed).length === 0)) {
