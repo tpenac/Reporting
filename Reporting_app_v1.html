@@ -102,8 +102,47 @@
 
     function parseNum(str) {
       if (str === null || str === undefined || str === '') return 0;
-      const s = String(str).replace(/\./g, '').replace(',', '.').replace(/[()]/g, m => m === '(' ? '-' : '').replace(/[^0-9.\-]/g, '');
-      return parseFloat(s) || 0;
+      let s = String(str).trim();
+      // Negativos entre parentesis: (4.737) -> -4737
+      const neg = s.startsWith('(') && s.endsWith(')');
+      if (neg) s = s.slice(1, -1).trim();
+      // Eliminar prefijos de moneda y espacios
+      s = s.replace(/^[€$\s]+/, '').replace(/[€$\s]+$/, '');
+      if (s === '' || s === '-') return 0;
+
+      const dots   = (s.match(/\./g) || []).length;
+      const commas = (s.match(/,/g)  || []).length;
+      let num;
+
+      if (dots > 1) {
+        // "1.234.567,89" o "1.234.567" → separador miles es punto
+        s = s.replace(/\./g, '').replace(',', '.');
+        num = parseFloat(s);
+      } else if (dots === 1 && commas === 1) {
+        // Determinar orden: "1,234.56" (ingles) o "1.234,56" (espanol)
+        num = (s.indexOf(',') < s.indexOf('.'))
+          ? parseFloat(s.replace(',', ''))          // ingles: quitar coma miles
+          : parseFloat(s.replace('.', '').replace(',', '.')); // espanol
+      } else if (dots === 0 && commas === 1) {
+        // "1234,56" → decimal espanol o "1,234" → miles ingles
+        const afterComma = s.split(',')[1] || '';
+        num = (afterComma.length === 3)
+          ? parseFloat(s.replace(',', ''))    // miles ingles: "1,234"
+          : parseFloat(s.replace(',', '.'));  // decimal espanol: "1234,56"
+      } else if (dots === 1 && commas === 0) {
+        // "1.234" (miles espanol, 3 dig) o "1234.56" (decimal ingles)
+        const afterDot = s.split('.')[1] || '';
+        num = (afterDot.length === 3)
+          ? parseFloat(s.replace('.', ''))   // miles espanol: "1.234" → 1234
+          : parseFloat(s);                   // decimal ingles: "1234.56"
+      } else {
+        // Sin separadores: numero entero
+        s = s.replace(/[^0-9\-]/g, '');
+        num = parseFloat(s);
+      }
+
+      if (isNaN(num)) return 0;
+      return neg ? -num : num;
     }
 
     // Lee una hoja de xlsx y devuelve array de arrays
@@ -997,6 +1036,49 @@
               ))}
             </div>
           </div>
+
+          {/* Resumen de datos cargados */}
+          {Object.values(data).some(Boolean) && (
+            <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+              <h3 className="font-bold text-gray-700 mb-2 text-sm">Verificacion de datos cargados</h3>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+                {data.pygReal && (
+                  <div className="bg-white border rounded p-2">
+                    <div className="text-gray-500">PyG Real — Ventas ene-26</div>
+                    <div className={'font-bold ' + (data.pygReal.ventas?.[0] > 0 && data.pygReal.ventas?.[0] < 999999 ? 'text-green-700' : 'text-red-600')}>
+                      {data.pygReal.ventas?.[0] != null ? data.pygReal.ventas[0].toFixed(0) : 'N/A'}
+                    </div>
+                    <div className="text-gray-400">EBITDA: {data.pygReal.ebitda?.[0]?.toFixed(0) ?? 'N/A'}</div>
+                  </div>
+                )}
+                {data.pygHist && (
+                  <div className="bg-white border rounded p-2">
+                    <div className="text-gray-500">PyG Hist — Ventas ene-25</div>
+                    <div className={'font-bold ' + (data.pygHist.ventas?.[0] > 0 && data.pygHist.ventas?.[0] < 999999 ? 'text-green-700' : 'text-red-600')}>
+                      {data.pygHist.ventas?.[0] != null ? data.pygHist.ventas[0].toFixed(0) : 'N/A'}
+                    </div>
+                  </div>
+                )}
+                {data.pygPpto && (
+                  <div className="bg-white border rounded p-2">
+                    <div className="text-gray-500">PyG Ppto — Ventas ene-26</div>
+                    <div className={'font-bold ' + (data.pygPpto.ventas?.[0] > 0 && data.pygPpto.ventas?.[0] < 999999 ? 'text-green-700' : 'text-red-600')}>
+                      {data.pygPpto.ventas?.[0] != null ? data.pygPpto.ventas[0].toFixed(0) : 'N/A'}
+                    </div>
+                  </div>
+                )}
+                {data.bsReal && (
+                  <div className="bg-white border rounded p-2">
+                    <div className="text-gray-500">BS — Activo ene-26</div>
+                    <div className={'font-bold ' + (data.bsReal.real?.activo?.[0] > 0 ? 'text-green-700' : 'text-red-600')}>
+                      {data.bsReal.real?.activo?.[0]?.toFixed(0) ?? 'N/A'}
+                    </div>
+                  </div>
+                )}
+              </div>
+              <p className="text-xs text-gray-400 mt-2">Los valores deben estar en miles de euros (rango esperado: 100 — 999.999). Si aparecen en rojo, borra y vuelve a subir.</p>
+            </div>
+          )}
 
           <div className="bg-red-50 border border-red-200 rounded-lg p-3">
             <div className="flex items-center justify-between">
