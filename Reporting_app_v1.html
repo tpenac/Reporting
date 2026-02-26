@@ -266,17 +266,20 @@
     }
 
     // Mapea labels del Excel a keys del PYG_LINES por similitud
+    // Los checks especificos van ANTES de los generales para evitar falsos positivos
     function matchPygLine(label) {
       const l = label.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
-      if (l.includes('venta') || l.includes('ingres')) return 'ventas';
+      // Primero los porcentajes (mas especificos, evitan caer en regla general de ebitda/margen)
+      if (l.includes('ebitda') && (l.includes('%') || l.includes('porcentaje') || l.startsWith('(%'))) return 'pct_ebitda';
+      if ((l.includes('mb') || l.includes('margen')) && (l.includes('%') || l.startsWith('(%'))) return 'pct_mb';
+      // Lineas generales
+      if (l.includes('venta') || (l.includes('ingres') && !l.includes('financier'))) return 'ventas';
       if (l.includes('coste') || l.includes('costo')) return 'coste';
-      if (l.includes('margen')) return 'margen';
-      if (l.includes('% ventas') && l.includes('mb')) return 'pct_mb';
+      if (l.includes('margen') && !l.includes('%')) return 'margen';
       if (l.includes('personal') || l.includes('sueldo')) return 'personal';
       if (l.includes('otros gastos') || l.includes('explotac')) return 'opex';
-      if (l.includes('deterioro') || l.includes('credito')) return 'deterioro';
-      if (l.includes('ebitda')) return 'ebitda';
-      if (l.includes('% ventas') && l.includes('ebitda')) return 'pct_ebitda';
+      if (l.includes('deterioro') || l.includes('credito comercial')) return 'deterioro';
+      if (l.includes('ebitda') && !l.includes('%')) return 'ebitda';
       if (l.includes('amort')) return 'amort';
       if ((l.includes('ebit') || l.includes('bfo')) && !l.includes('ebitda')) return 'ebit';
       if (l.includes('financier') && (l.includes('ingreso') || l.includes('gasto'))) return 'gtos_fin';
@@ -296,9 +299,17 @@
       if (!ws) return null;
       const rows = sheetToArray(ws);
       const headerIdx = findHeaderRow(rows, mesLabels);
-      if (headerIdx < 0) return null;
+      console.log('[parsePygEvol] headerIdx:', headerIdx);
+      if (headerIdx < 0) { console.log('[parsePygEvol] NO SE ENCONTRO CABECERA'); return null; }
+      // Log de las primeras 20 celdas de la fila de cabecera para diagnostico
+      console.log('[parsePygEvol] Fila cabecera (primeras 20 celdas):', rows[headerIdx].slice(0, 20));
       const monthCols = findMonthCols(rows[headerIdx], mesLabels);
       const labelCol = findLabelCol(rows, headerIdx);
+      console.log('[parsePygEvol] monthCols:', monthCols, '| labelCol:', labelCol);
+      // Log de las primeras 5 filas de datos para diagnostico
+      for (let dbg = headerIdx + 1; dbg <= headerIdx + 5 && dbg < rows.length; dbg++) {
+        console.log('[parsePygEvol] Fila dato', dbg, '- label[col', labelCol, ']:', rows[dbg][labelCol], '| mes0[col', monthCols[0], ']:', rows[dbg][monthCols[0]]);
+      }
       const result = {};
       for (let r = headerIdx + 1; r < rows.length; r++) {
         const label = String(rows[r][labelCol] || '').trim();
