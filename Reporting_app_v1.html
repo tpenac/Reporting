@@ -32,7 +32,7 @@
       keys.forEach(function(k) { if (k.indexOf('babel') !== -1 || k.indexOf('transform') !== -1) sessionStorage.removeItem(k); });
     })();
   </script>
-  <script type="text/babel" data-build="20260227-v2">
+  <script type="text/babel" data-build="20260227-v4">
     const { useState, useEffect, useCallback, useRef } = React;
 
     // ─── CONSTANTES ───────────────────────────────────────────────────────────
@@ -522,6 +522,98 @@
       return result;
     }
 
+    // Parsea la hoja "No recurrentes" con dos bloques: REALES y PRESUPUESTO.
+    // Devuelve: { reales: { rows, gastos_gen, gastos_lab, total }, presupuesto: { rows, total } }
+    function parseNoRecSheet(wb, sheetName, mesLabels) {
+      const ws = wb.Sheets[sheetName];
+      if (!ws) return null;
+      const rows = sheetToArray(ws);
+
+      // Encontrar fila de cabecera (texto con mes+anio o seriales de fecha Excel 2026)
+      let headerIdx = findHeaderRow(rows, mesLabels);
+      if (headerIdx < 0) {
+        for (let r = 0; r < Math.min(rows.length, 15); r++) {
+          let dateCount = 0;
+          for (let c = 0; c < rows[r].length; c++) {
+            const v = Number(rows[r][c]);
+            if (v >= 46000 && v <= 46400 && String(rows[r][c]).trim() !== '') dateCount++;
+          }
+          if (dateCount >= 3) { headerIdx = r; break; }
+        }
+      }
+      if (headerIdx < 0) return null;
+
+      // Encontrar columnas de meses
+      let monthCols = findMonthCols(rows[headerIdx], mesLabels);
+      // Fallback: detectar por serial de fecha (Jan-Dec 2026)
+      if (Object.keys(monthCols).length < 3) {
+        const SERIALS = [46023,46054,46082,46113,46143,46174,46204,46235,46266,46296,46327,46357];
+        for (let idx = 0; idx < 12; idx++) {
+          for (let c = 0; c < rows[headerIdx].length; c++) {
+            const v = Number(rows[headerIdx][c]);
+            if (Math.abs(v - SERIALS[idx]) <= 1) { monthCols[idx] = c; break; }
+          }
+        }
+      }
+
+      // Encontrar columna de labels buscando keywords propias del NoRec
+      const normalize = s => String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+      const norecKw = ['gastos no recurrente', 'gastos generales', 'gastos laborales', 'total gastos'];
+      let labelCol = -1;
+      outer: for (let r = headerIdx + 1; r < Math.min(rows.length, headerIdx + 60); r++) {
+        for (let c = 0; c < Math.min(rows[r].length, 12); c++) {
+          if (norecKw.some(kw => normalize(rows[r][c]).includes(kw))) { labelCol = c; break outer; }
+        }
+      }
+      if (labelCol < 0) labelCol = findLabelCol(rows, headerIdx, null);
+
+      const result = {
+        reales:      { rows: [], gastos_gen: null, gastos_lab: null, total: null },
+        presupuesto: { rows: [], total: null },
+      };
+      let block = null;
+
+      for (let r = headerIdx + 1; r < rows.length; r++) {
+        const label = String(rows[r][labelCol] || '').trim();
+        if (!label || label.length < 3) continue;
+        const lc = normalize(label);
+
+        // Detectar cabeceras de bloque (no se anaden como filas de datos)
+        if (lc.includes('gastos no recurrente') || lc.includes('gtos no recurrente')) {
+          block = (lc.includes('presupuesto') || lc.includes('ppto')) ? 'presupuesto' : 'reales';
+          continue;
+        }
+        if (!block) continue;
+
+        const vals = MESES.map((_, idx) => {
+          const c = monthCols[idx];
+          return c !== undefined ? parseNum(rows[r][c]) : 0;
+        });
+
+        let tipo = 'detail';
+        if (lc.includes('total gastos no recurrente') || lc.includes('total gtos no recurrente')) {
+          tipo = 'total';
+          result[block].total = vals;
+        } else if (lc === 'gastos generales' || lc.startsWith('gastos generales')) {
+          tipo = 'subtotal';
+          if (block === 'reales') result.reales.gastos_gen = vals;
+        } else if (lc === 'gastos laborales' || lc.startsWith('gastos laborales')) {
+          tipo = 'subtotal';
+          if (block === 'reales') result.reales.gastos_lab = vals;
+        }
+        result[block].rows.push({ label, vals, tipo });
+      }
+
+      // Si no hay fila de total, calcular de subtotales
+      if (!result.reales.total && (result.reales.gastos_gen || result.reales.gastos_lab)) {
+        result.reales.total = MESES.map((_, i) =>
+          (result.reales.gastos_gen?.[i] || 0) + (result.reales.gastos_lab?.[i] || 0)
+        );
+      }
+      if (!result.reales.rows.length && !result.presupuesto.rows.length) return null;
+      return result;
+    }
+
     // ─── CALCULOS ──────────────────────────────────────────────────────────────
 
     // Calcula los % del PyG a partir de ventas
@@ -537,6 +629,50 @@
         out.pct_ebitda = pyg.ventas ? (pyg.ebitda  || 0) / pyg.ventas : 0;
       }
       return out;
+    }
+
+    // Ajusta pygReal incorporando datos de No Recurrentes:
+    // - no_rec: total del bloque Reales del NoRec
+    // - opex: suma GASTOS GENERALES (no recurrentes clasificados como opex)
+    // - personal: suma GASTOS LABORALES (no recurrentes clasificados como personal)
+    // - ebitda, ebit, bai, bdi se recalculan en cascada
+    function getAdjustedPygReal(pygReal, norecReal) {
+      if (!pygReal) return pygReal;
+      if (!norecReal?.reales) return pygReal;
+      const nr = norecReal.reales;
+      if (!nr.total && !nr.gastos_gen && !nr.gastos_lab) return pygReal;
+
+      const addArr = (a, b) => {
+        if (!a && !b) return Array(12).fill(0);
+        if (!a) return (b || []).slice();
+        return a.map((v, i) => v + (b?.[i] || 0));
+      };
+
+      // CONVENCION DE SIGNOS: en el PyG los costes se almacenan como NEGATIVOS
+      // (ej: opex=-171, personal=-393). Los valores del NoRec vienen POSITIVOS
+      // desde la hoja Excel. Se niegan al aplicar para mantener coherencia.
+      const neg = (arr) => arr ? arr.map(v => -v) : null;
+
+      // opex y personal reciben el coste negado (se vuelven mas negativos)
+      const adjOpex     = addArr(pygReal.opex,    neg(nr.gastos_gen));
+      const adjPersonal = addArr(pygReal.personal, neg(nr.gastos_lab));
+      // no_rec se guarda negativo para mostrarse como coste (entre parentesis)
+      const adjNoRec    = neg(nr.total) || pygReal.no_rec || Array(12).fill(0);
+
+      // Delta en valor absoluto (positivo): cuanto aumentan los costes
+      const delta = MESES.map((_, i) => (nr.gastos_gen?.[i] || 0) + (nr.gastos_lab?.[i] || 0));
+      // EBITDA y EBIT se reducen (mas negativos) por los costes annadidos
+      const adjEbitda = pygReal.ebitda ? pygReal.ebitda.map((v, i) => v - delta[i]) : null;
+      const adjEbit   = pygReal.ebit   ? pygReal.ebit.map((v, i) => v - delta[i])   : null;
+
+      return {
+        ...pygReal,
+        opex:     adjOpex,
+        personal: adjPersonal,
+        no_rec:   adjNoRec,
+        ...(adjEbitda && { ebitda: adjEbitda }),
+        ...(adjEbit   && { ebit:   adjEbit }),
+      };
     }
 
     // Suma YTD hasta el mes indicado (0-indexed)
@@ -1022,6 +1158,62 @@
       );
     }
 
+    // ─── ZOOM NO RECURRENTES ───────────────────────────────────────────────────
+
+    function ZoomNoRec({ data }) {
+      if (!data?.reales && !data?.presupuesto)
+        return <div className="text-gray-400 italic text-sm p-4">Sin datos cargados</div>;
+
+      function renderBlock(block, title, headerColor) {
+        if (!block?.rows?.length) return null;
+        return (
+          <div className="mb-8">
+            <div className={'px-4 py-2 font-bold text-sm rounded-t ' + headerColor}>{title}</div>
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse text-xs">
+                <thead>
+                  <tr className="bg-gray-800 text-white">
+                    <th className="px-3 py-2 text-left sticky left-0 bg-gray-800 min-w-52"></th>
+                    {MESES_LABEL.map(m => <th key={m} className="px-2 py-2 text-right text-orange-300 min-w-16">{m}</th>)}
+                    <th className="px-2 py-2 text-right text-orange-300">YTD</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {block.rows.map((row, i) => {
+                    const total = row.vals.reduce((a, b) => a + b, 0);
+                    const isTotal    = row.tipo === 'total';
+                    const isSubtotal = row.tipo === 'subtotal';
+                    const rowBg   = isTotal    ? 'bg-gray-200 border-t-2 border-gray-500'
+                                  : isSubtotal ? 'bg-gray-100 border-t border-gray-300'
+                                  : 'hover:bg-yellow-50 border-b border-gray-100';
+                    const labelBg = isTotal    ? 'bg-gray-200 font-bold text-gray-900'
+                                  : isSubtotal ? 'bg-gray-100 font-semibold text-gray-800'
+                                  : 'bg-white text-gray-600';
+                    return (
+                      <tr key={i} className={rowBg}>
+                        <td className={'px-3 py-1 sticky left-0 ' + labelBg + ((!isTotal && !isSubtotal) ? ' pl-6' : '')}>
+                          {row.label}
+                        </td>
+                        {row.vals.map((v, j) => <Td key={j} value={v !== 0 ? fmt(v) : '-'} tipo={isTotal ? 'total' : isSubtotal ? 'subtotal' : 'real'} />)}
+                        <Td value={fmt(total)} tipo={isTotal ? 'total' : 'subtotal'} />
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        );
+      }
+
+      return (
+        <div>
+          {renderBlock(data.reales,      'Gastos no recurrentes — REAL',        'bg-orange-100 text-orange-800')}
+          {renderBlock(data.presupuesto, 'Gastos no recurrentes — PRESUPUESTO', 'bg-green-100 text-green-800')}
+        </div>
+      );
+    }
+
     // ─── PANTALLA DE CONFIGURACION ─────────────────────────────────────────────
 
     function ConfigScreen({ data, onLoad, onClear }) {
@@ -1032,7 +1224,6 @@
         { key:'bsPpto',    label:'BS Presupuesto 2026 (mensual)',          color:'green',  sheet:'BS',  type:'bs' },
         { key:'opexHist',  label:'OPEX Historico 2025',                   color:'blue',   sheet:'OPEX', mesLabels: MESES_HIST },
         { key:'opexPpto',  label:'OPEX Presupuesto 2026',                 color:'green',  sheet:'OPEX', mesLabels: MESES_LABEL },
-        { key:'norecPpto', label:'No Recurrentes Presupuesto 2026',       color:'green',  sheet:'NoRec', mesLabels: MESES_LABEL },
       ];
 
       const monthlyItems = [
@@ -1100,8 +1291,10 @@
               || wb.SheetNames[0];
           }
           console.log('[PyG/Other] Hoja usada:', sheetName, '| Clave:', storageKey, '| Hojas:', wb.SheetNames);
-          // Hojas de detalle usan parseMonthlySheet directamente (evita que parsePygEvol devuelva {} vacio)
-          if (item.key.includes('norec') || item.key.includes('opex') || item.key.includes('capex') || item.key.includes('dfn')) {
+          // Hojas de detalle usan parsers especializados (evita que parsePygEvol devuelva {} vacio)
+          if (item.key.includes('norec')) {
+            parsed = parseNoRecSheet(wb, sheetName, item.mesLabels);
+          } else if (item.key.includes('opex') || item.key.includes('capex') || item.key.includes('dfn')) {
             parsed = parseMonthlySheet(wb, sheetName, item.mesLabels);
           } else {
             parsed = parsePygEvol(wb, sheetName, item.mesLabels);
@@ -1223,13 +1416,16 @@
         setAppData({});
       }
 
+      // PyG real ajustado con No Recurrentes (opex+personal+no_rec+subtotales recalculados)
+      const adjPygReal = getAdjustedPygReal(appData.pygReal, appData.norecReal);
+
       // Datos derivados para el mes activo
-      const pygRealMes  = appData.pygReal  ? Object.fromEntries(PYG_LINES.map(l => [l.key, appData.pygReal?.[l.key]?.[mesActivo] ?? 0])) : null;
+      const pygRealMes  = adjPygReal   ? Object.fromEntries(PYG_LINES.map(l => [l.key, adjPygReal?.[l.key]?.[mesActivo] ?? 0])) : null;
       const pygHistMes  = appData.pygHist  ? Object.fromEntries(PYG_LINES.map(l => [l.key, appData.pygHist?.[l.key]?.[mesActivo] ?? 0])) : null;
       const pygPptoMes  = appData.pygPpto  ? Object.fromEntries(PYG_LINES.map(l => [l.key, appData.pygPpto?.[l.key]?.[mesActivo] ?? 0])) : null;
 
       // YTD: suma de ene hasta mes activo
-      const pygRealYTD  = appData.pygReal  ? Object.fromEntries(PYG_LINES.map(l => [l.key, ytd(appData.pygReal?.[l.key], mesActivo)])) : null;
+      const pygRealYTD  = adjPygReal   ? Object.fromEntries(PYG_LINES.map(l => [l.key, ytd(adjPygReal?.[l.key], mesActivo)])) : null;
       const pygHistYTD  = appData.pygHist  ? Object.fromEntries(PYG_LINES.map(l => [l.key, ytd(appData.pygHist?.[l.key], mesActivo)])) : null;
       const pygPptoYTD  = appData.pygPpto  ? Object.fromEntries(PYG_LINES.map(l => [l.key, ytd(appData.pygPpto?.[l.key], mesActivo)])) : null;
 
@@ -1240,12 +1436,12 @@
       const bsPptoMes   = appData.bsPpto ? Object.fromEntries(BS_LINES.map(l => [l.key, appData.bsPpto?.[l.key]?.[mesActivo] ?? 0])) : null;
 
       // CF mes
-      const cfMes = calcCF(appData.pygReal, appData.bsReal?.real, appData.bsReal?.hist || appData.bsHist, appData.capexReal, appData.dfnReal, mesActivo);
+      const cfMes = calcCF(adjPygReal, appData.bsReal?.real, appData.bsReal?.hist || appData.bsHist, appData.capexReal, appData.dfnReal, mesActivo);
 
       // CF YTD (suma mes a mes)
       function cfYtd() {
-        if (!appData.pygReal || !appData.bsReal?.real) return null;
-        const cfArr = MESES.map((_, m) => calcCF(appData.pygReal, appData.bsReal?.real, appData.bsReal?.hist || appData.bsHist, appData.capexReal, appData.dfnReal, m));
+        if (!adjPygReal || !appData.bsReal?.real) return null;
+        const cfArr = MESES.map((_, m) => calcCF(adjPygReal, appData.bsReal?.real, appData.bsReal?.hist || appData.bsHist, appData.capexReal, appData.dfnReal, m));
         const sum = {};
         CF_LINES.forEach(l => { sum[l.key] = cfArr.slice(0, mesActivo+1).reduce((a, cf) => a + (cf?.[l.key] || 0), 0); });
         // Caja EoP y BoP no se suman, son valores de stock
@@ -1332,7 +1528,7 @@
                 {tabPyg === 'YTD' && <PygTable
                   hist={pygHistYTD} real={pygRealYTD} ppto={pygPptoYTD}
                   titulo={{ hist: 'YTD ' + MESES_HIST[mesActivo], real: 'YTD ' + mesLabel, ppto: 'YTD ' + mesLabel }} />}
-                {tabPyg === 'EVOL' && <PygEvol evol={appData.pygReal} evolHist={appData.pygHist} evolPpto={appData.pygPpto} />}
+                {tabPyg === 'EVOL' && <PygEvol evol={adjPygReal} evolHist={appData.pygHist} evolPpto={appData.pygPpto} />}
               </div>
             )}
 
@@ -1364,7 +1560,7 @@
               <div>
                 <SectionTitle>Detalle — {empresa}</SectionTitle>
                 <TabBar tabs={['NoRec','OPEX','CAPEX','DFN','WC']} active={tabZoom} onChange={setTabZoom} />
-                {tabZoom === 'NoRec'  && <ZoomTable data={appData.norecReal} title="Gastos No Recurrentes Real" />}
+                {tabZoom === 'NoRec'  && <ZoomNoRec data={appData.norecReal} />}
                 {tabZoom === 'OPEX'   && <ZoomTable data={appData.opexReal}  title="OPEX Real" />}
                 {tabZoom === 'CAPEX'  && <ZoomTable data={appData.capexReal} title="CAPEX Real" />}
                 {tabZoom === 'DFN'    && <ZoomTable data={appData.dfnReal}   title="Deuda Financiera Neta" />}
