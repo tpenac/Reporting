@@ -32,7 +32,7 @@
       keys.forEach(function(k) { if (k.indexOf('babel') !== -1 || k.indexOf('transform') !== -1) sessionStorage.removeItem(k); });
     })();
   </script>
-  <script type="text/babel" data-build="20260226-v5">
+  <script type="text/babel" data-build="20260227-v2">
     const { useState, useEffect, useCallback, useRef } = React;
 
     // ─── CONSTANTES ───────────────────────────────────────────────────────────
@@ -235,12 +235,16 @@
     // mas a la derecha y SI tienen el ano en la cabecera.
     function findMonthCols(headerRow, mesLabels) {
       const yr = mesLabels[0]?.substring(mesLabels[0].indexOf('-') + 1) || '26';
+      // Meses en español e inglés para detectar cabeceras en ambos idiomas
+      const EN_MESES = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
 
       // Paso 1: busca la secuencia leftmost de 12 meses consecutivos (sin requerir ano)
       for (let startC = 0; startC < headerRow.length - 11; startC++) {
         const v0 = String(headerRow[startC]).toLowerCase().trim();
-        // El primer mes debe empezar con 'ene'
-        if (!v0.startsWith('ene') && !(v0.includes('ene') && (v0.includes('.') || v0.includes('-')))) continue;
+        // El primer mes debe empezar con 'ene' (español) o 'jan' (inglés)
+        const esEne = v0.startsWith('ene') || (v0.includes('ene') && (v0.includes('.') || v0.includes('-')));
+        const esJan = v0.startsWith('jan') || (v0.includes('jan') && (v0.includes('.') || v0.includes('-')));
+        if (!esEne && !esJan) continue;
         // Intenta encontrar los 12 meses en orden a partir de startC
         const candidate = { 0: startC };
         let prev = startC;
@@ -249,7 +253,9 @@
           let found = false;
           for (let c = prev + 1; c <= prev + 4 && c < headerRow.length; c++) {
             const v = String(headerRow[c]).toLowerCase().trim();
-            if (v.startsWith(MESES[i]) || v.includes(MESES[i] + '.') || v.includes(MESES[i] + '-')) {
+            const matchEs = v.startsWith(MESES[i]) || v.includes(MESES[i] + '.') || v.includes(MESES[i] + '-');
+            const matchEn = v.startsWith(EN_MESES[i]) || v.includes(EN_MESES[i] + '.') || v.includes(EN_MESES[i] + '-');
+            if (matchEs || matchEn) {
               candidate[i] = c; prev = c; found = true; break;
             }
           }
@@ -262,19 +268,22 @@
       }
 
       // Paso 2 (fallback): busca mes+ano por celda (util si cada seccion tiene el ano)
+      const EN_MESES2 = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
       const cols = {};
       mesLabels.forEach((label, idx) => {
-        const mes = label.substring(0, 3).toLowerCase();
+        const mes = label.substring(0, 3).toLowerCase();  // español
+        const mesEn = EN_MESES2[idx];                     // inglés
         for (let c = 0; c < headerRow.length; c++) {
           const v = String(headerRow[c]).toLowerCase().trim();
-          if (v.includes(mes) && (v.includes(yr) || v.includes('20' + yr))) { cols[idx] = c; break; }
+          const hasYr = v.includes(yr) || v.includes('20' + yr);
+          if ((v.includes(mes) || v.includes(mesEn)) && hasYr) { cols[idx] = c; break; }
         }
         if (cols[idx] === undefined) {
           const usadas = new Set(Object.values(cols));
           for (let c = 0; c < headerRow.length; c++) {
             if (usadas.has(c)) continue;
             const v = String(headerRow[c]).toLowerCase().trim();
-            if (v.startsWith(mes) || v === mes) { cols[idx] = c; break; }
+            if (v.startsWith(mes) || v === mes || v.startsWith(mesEn) || v === mesEn) { cols[idx] = c; break; }
           }
         }
       });
@@ -306,23 +315,36 @@
     // Los checks especificos van ANTES de los generales para evitar falsos positivos
     function matchPygLine(label) {
       const l = label.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
-      // Primero los porcentajes (mas especificos, evitan caer en regla general de ebitda/margen)
+      // 1. Porcentajes primero (mas especificos)
       if (l.includes('ebitda') && (l.includes('%') || l.includes('porcentaje') || l.startsWith('(%'))) return 'pct_ebitda';
       if ((l.includes('mb') || l.includes('margen')) && (l.includes('%') || l.startsWith('(%'))) return 'pct_mb';
-      // Lineas generales
-      if (l.includes('venta') || (l.includes('ingres') && !l.includes('financier'))) return 'ventas';
+      // 2. Coste ANTES de ventas para no confundir "Coste de las ventas" con ventas
       if (l.includes('coste') || l.includes('costo')) return 'coste';
+      // 3. Ventas — excluir filas con %, con coste, y "no operativos" (que contiene 'ingres')
+      //    Reconoce: "Total Ventas", "Importe neto de la cifra de negocios", "Ingresos de explotacion"
+      if (!l.includes('%') && (
+        l.includes('venta') ||
+        l.includes('cifra de negocio') ||
+        (l.includes('ingres') && !l.includes('financier') && !l.includes('dto') && !l.includes('no operat'))
+      )) return 'ventas';
+      // 4. Resto de lineas
       if (l.includes('margen') && !l.includes('%')) return 'margen';
       if (l.includes('personal') || l.includes('sueldo')) return 'personal';
-      if (l.includes('otros gastos') || l.includes('explotac')) return 'opex';
+      // Reconoce: "Otros gastos de explotacion", "Gastos generales" (4.b)
+      if (l.includes('otros gastos') || l.includes('gastos generales') || l.includes('explotac')) return 'opex';
+      // Reconoce: "Deterioro del credito comercial" (4.d)
       if (l.includes('deterioro') || l.includes('credito comercial')) return 'deterioro';
       if (l.includes('ebitda') && !l.includes('%')) return 'ebitda';
       if (l.includes('amort')) return 'amort';
+      // BAI antes de EBIT para no confundir "BFO ANTES DE IMPUESTOS (BAI)" con EBIT
+      // Reconoce: "BAI", "Antes de impuestos", "BFO ANTES DE IMPUESTOS (BAI)" (8.)
+      if (l.includes('bai') || l.includes('antes de impuesto') || (l.includes('bfo') && l.includes('impuesto'))) return 'bai';
       if ((l.includes('ebit') || l.includes('bfo')) && !l.includes('ebitda')) return 'ebit';
+      // Reconoce: "Ingresos/gastos financieros", "Ingresos y gastos no operativos" (7.)
       if (l.includes('financier') && (l.includes('ingreso') || l.includes('gasto'))) return 'gtos_fin';
+      if (l.includes('no operativ') || l.includes('no operat')) return 'gtos_fin';
       if (l.includes('no recurrente') || l.includes('no recur')) return 'no_rec';
       if (l.includes('dto') && l.includes('comercial')) return 'dto_com';
-      if (l.includes('bai') || l.includes('antes de impuesto')) return 'bai';
       if (l.includes('impuesto') || l.includes('irpf')) return 'impuestos';
       if (l.includes('bdi') || l.includes('resultado') || l.includes('beneficio neto')) return 'bdi';
       return null;
@@ -353,10 +375,14 @@
         if (!label) continue;
         const key = matchPygLine(label);
         if (!key) continue;
+        // First-occurrence wins: la primera seccion (Consolidado) no debe ser sobreescrita
+        // por secciones de empresas individuales (AGS, AHL, FTP) que aparecen despues
+        if (result[key]) continue;
         const vals = MESES.map((_, idx) => {
           const c = monthCols[idx];
           return c !== undefined ? parseNum(rows[r][c]) : 0;
         });
+        console.log('[parsePygEvol] match row', r, '| key:', key, '| val[0]:', vals[0]);
         result[key] = vals;
       }
       return result;
@@ -1074,9 +1100,11 @@
               || wb.SheetNames[0];
           }
           console.log('[PyG/Other] Hoja usada:', sheetName, '| Clave:', storageKey, '| Hojas:', wb.SheetNames);
-          parsed = parsePygEvol(wb, sheetName, item.mesLabels);
-          if (!parsed && (item.key.includes('norec') || item.key.includes('opex') || item.key.includes('capex') || item.key.includes('dfn'))) {
+          // Hojas de detalle usan parseMonthlySheet directamente (evita que parsePygEvol devuelva {} vacio)
+          if (item.key.includes('norec') || item.key.includes('opex') || item.key.includes('capex') || item.key.includes('dfn')) {
             parsed = parseMonthlySheet(wb, sheetName, item.mesLabels);
+          } else {
+            parsed = parsePygEvol(wb, sheetName, item.mesLabels);
           }
           console.log('[PyG/Other] Parsed keys:', parsed ? Object.keys(parsed) : 'null', '| ventas[0]:', parsed?.ventas?.[0]);
         }
