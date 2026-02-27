@@ -32,7 +32,7 @@
       keys.forEach(function(k) { if (k.indexOf('babel') !== -1 || k.indexOf('transform') !== -1) sessionStorage.removeItem(k); });
     })();
   </script>
-  <script type="text/babel" data-build="20260227-v15">
+  <script type="text/babel" data-build="20260227-v16">
     const { useState, useEffect, useCallback, useRef } = React;
 
     // ─── CONSTANTES ───────────────────────────────────────────────────────────
@@ -1667,6 +1667,14 @@
                     </div>
                   </div>
                 )}
+                {data.bsHist && (
+                  <div className="bg-white border rounded p-2">
+                    <div className="text-gray-500">BS Hist — Activo dic-25</div>
+                    <div className={'font-bold ' + (data.bsHist.activo > 0 ? 'text-green-700' : 'text-red-600')}>
+                      {data.bsHist.activo != null ? data.bsHist.activo.toFixed(0) : 'N/A'}
+                    </div>
+                  </div>
+                )}
               </div>
               <p className="text-xs text-gray-400 mt-2">Los valores deben estar en miles de euros (rango esperado: 100 — 999.999). Si aparecen en rojo, borra y vuelve a subir.</p>
             </div>
@@ -1728,12 +1736,13 @@
 
       // BS YTD: valor del mes activo
       const bsRealMes   = appData.bsReal?.real  ? Object.fromEntries(BS_LINES.map(l => [l.key, appData.bsReal.real?.[l.key]?.[mesActivo] ?? 0])) : null;
-      // bsHistData: snapshot historico dic-25. Usa bsReal.hist solo si tiene valores reales (no ceros).
-      // parseBsEvolFlat devuelve hist={todo ceros} si el archivo plano no tiene columna historica.
+      // bsHistData: snapshot historico dic-25.
+      // Prioridad: bsHist cargado explicitamente > bsReal.hist derivado del archivo evol.
       const bsHistData = (() => {
+        if (appData.bsHist && Object.values(appData.bsHist).some(v => v !== 0)) return appData.bsHist;
         const h = appData.bsReal?.hist;
         if (h && Object.values(h).some(v => v !== 0)) return h;
-        return appData.bsHist || null;
+        return null;
       })();
       const bsHistMes   = bsHistData;
       // bsPpto se guarda como raw.real (objeto plano { key: [v1..v12] }), sin wrapper .real
