@@ -32,7 +32,7 @@
       keys.forEach(function(k) { if (k.indexOf('babel') !== -1 || k.indexOf('transform') !== -1) sessionStorage.removeItem(k); });
     })();
   </script>
-  <script type="text/babel" data-build="20260227-v4">
+  <script type="text/babel" data-build="20260227-v15">
     const { useState, useEffect, useCallback, useRef } = React;
 
     // ─── CONSTANTES ───────────────────────────────────────────────────────────
@@ -172,6 +172,72 @@
         rows.push(row);
       }
       return rows;
+    }
+
+    // ─── PLANTILLAS EXCEL ─────────────────────────────────────────────────────
+
+    function downloadXlsx(wb, filename) {
+      const buf = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+      const blob = new Blob([buf], { type: 'application/octet-stream' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = filename; a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
+    // Plantilla PyG: CONCEPTO + ene..dic, filas de datos (sin subtotales ni porcentajes)
+    function makePygWb(sheetName) {
+      const wb = XLSX.utils.book_new();
+      const headers = ['CONCEPTO', ...MESES];
+      const dataRows = PYG_LINES
+        .filter(l => l.tipo !== 'pct' && l.tipo !== 'subtotal')
+        .map(l => [l.label, ...Array(12).fill(0)]);
+      const ws = XLSX.utils.aoa_to_sheet([headers, ...dataRows]);
+      ws['!cols'] = [{ wch: 45 }, ...Array(12).fill({ wch: 10 })];
+      XLSX.utils.book_append_sheet(wb, ws, sheetName);
+      return wb;
+    }
+
+    // Plantilla BS: CONCEPTO + columnas dadas (p.ej. ['dic-25'] o ['ene'..'dic'] o ambas)
+    function makeBsWb(sheetName, cols) {
+      const wb = XLSX.utils.book_new();
+      const headers = ['CONCEPTO', ...cols];
+      const dataRows = BS_LINES.map(l => [l.label, ...Array(cols.length).fill(0)]);
+      const ws = XLSX.utils.aoa_to_sheet([headers, ...dataRows]);
+      ws['!cols'] = [{ wch: 45 }, ...Array(cols.length).fill({ wch: 12 })];
+      XLSX.utils.book_append_sheet(wb, ws, sheetName);
+      return wb;
+    }
+
+    // Plantilla generica: CONCEPTO + ene..dic, con filas de ejemplo editables
+    function makeSimpleWb(sheetName, exampleRows) {
+      const wb = XLSX.utils.book_new();
+      const headers = ['CONCEPTO', ...MESES];
+      const dataRows = exampleRows.map(label => [label, ...Array(12).fill(0)]);
+      const ws = XLSX.utils.aoa_to_sheet([headers, ...dataRows]);
+      ws['!cols'] = [{ wch: 40 }, ...Array(12).fill({ wch: 10 })];
+      XLSX.utils.book_append_sheet(wb, ws, sheetName);
+      return wb;
+    }
+
+    function getTemplate(storageKey) {
+      const MES12 = [...MESES];
+      const OPEX_EX = ['Alquiler', 'Suministros', 'Servicios profesionales', 'Otros gastos'];
+      switch (storageKey) {
+        case 'pygHist':   return { wb: makePygWb('PyG'),                              name: 'plantilla_pyg_hist_2025.xlsx' };
+        case 'pygPpto':   return { wb: makePygWb('PyG'),                              name: 'plantilla_pyg_ppto_2026.xlsx' };
+        case 'pygReal':   return { wb: makePygWb('PyG'),                              name: 'plantilla_pyg_real_2026.xlsx' };
+        case 'bsHist':    return { wb: makeBsWb('BS', MES12),                         name: 'plantilla_bs_hist_2025.xlsx' };
+        case 'bsPpto':    return { wb: makeBsWb('BS', MES12),                         name: 'plantilla_bs_ppto_2026.xlsx' };
+        case 'bsReal':    return { wb: makeBsWb('BS', MES12),                         name: 'plantilla_bs_real_2026.xlsx' };
+        case 'opexHist':  return { wb: makeSimpleWb('OPEX', OPEX_EX),                 name: 'plantilla_opex_hist_2025.xlsx' };
+        case 'opexPpto':  return { wb: makeSimpleWb('OPEX', OPEX_EX),                 name: 'plantilla_opex_ppto_2026.xlsx' };
+        case 'opexReal':  return { wb: makeSimpleWb('OPEX', OPEX_EX),                 name: 'plantilla_opex_real_2026.xlsx' };
+        case 'capexReal': return { wb: makeSimpleWb('CAPEX', ['Maquinaria', 'Instalaciones', 'Equipos']), name: 'plantilla_capex_real_2026.xlsx' };
+        case 'dfnReal':   return { wb: makeSimpleWb('DFN',   ['Deuda LP', 'Deuda CP', 'Tesoreria']),      name: 'plantilla_dfn_real_2026.xlsx' };
+        case 'norecReal': return { wb: makeSimpleWb('NoRec', ['Reestructuracion', 'Litigios', 'Otros']), name: 'plantilla_norec_real_2026.xlsx' };
+        default: return null;
+      }
     }
 
     // ─── STORAGE ──────────────────────────────────────────────────────────────
@@ -393,7 +459,7 @@
       const l = label.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
       if (l === 'activo no corriente' || l.includes('activo no corr')) return 'act_no_cor';
       if (l.includes('inmovilizado')) return 'inmov';
-      if (l.includes('inversiones') && l.includes('grupo') && l.includes('largo')) return 'inv_grupo_lp';
+      if (l.includes('inversiones') && l.includes('grupo') && (l.includes('largo') || l.endsWith(' lp') || l.includes(' lp '))) return 'inv_grupo_lp';
       if (l.includes('inversiones') && l.includes('largo') && !l.includes('grupo')) return 'inv_fin_lp';
       if (l.includes('impuesto diferido') && l.includes('activ')) return 'imp_dif_act';
       if (l === 'activo corriente' || l.includes('activo corr')) return 'act_cor';
@@ -418,63 +484,185 @@
       return null;
     }
 
-    // Parsea BS Evol: primera columna = historico (dic-25), luego 12 meses 2026
+    // Parsea formato plano: Gr. Balance Nivel 3|2|1 | Mes | ene | feb | ... | dic
+    // Devuelve: { hist: {key: 0...}, real: {key: [v1..v12]} }
+    function parseBsEvolFlat(rows) {
+      const norm = s => String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim();
+      // Buscar fila de cabecera con >= 6 meses del array MESES
+      let headerIdx = -1;
+      const monthCols = {};
+      for (let r = 0; r < Math.min(rows.length, 5); r++) {
+        let cnt = 0; const tmp = {};
+        for (let c = 0; c < rows[r].length; c++) {
+          const mi = MESES.indexOf(norm(rows[r][c]));
+          if (mi >= 0 && tmp[mi] === undefined) { tmp[mi] = c; cnt++; }
+        }
+        if (cnt >= 6) { headerIdx = r; Object.assign(monthCols, tmp); break; }
+      }
+      if (headerIdx < 0) { console.log('[parseBsEvolFlat] cabecera no encontrada'); return null; }
+      console.log('[parseBsEvolFlat] headerIdx:', headerIdx, 'monthCols:', monthCols);
+
+      function matchFlat(c1, c2, c3) {
+        const n1 = norm(c1), n2 = norm(c2), n3 = norm(c3);
+        if (n1 === 'activo' && n2 === 'totales') return 'activo';
+        if (n2.includes('activo no corriente')) {
+          if (n3 === 'totales') return 'act_no_cor';
+          if (n3.includes('inmovilizado')) return 'inmov';
+          if (n3.includes('inversiones') && n3.includes('largo') && n3.includes('grupo')) return 'inv_grupo_lp';
+          if (n3.includes('inversiones') && n3.includes('largo')) return 'inv_fin_lp';
+          if (n3.includes('impuesto')) return 'imp_dif_act';
+        }
+        if (n2.includes('activo corriente')) {
+          if (n3 === 'totales') return 'act_cor';
+          if (n3.includes('existencias')) return 'existencias';
+          if (n3.includes('deudores') || n3.includes('cuentas a cobrar')) return 'clientes';
+          if (n3.includes('inversiones') && n3.includes('corto') && !n3.includes('grupo')) return 'inv_fin_cp';
+          if (n3.includes('periodificaciones')) return 'periodif';
+          if (n3.includes('efectivo')) return 'tesoreria';
+        }
+        if (n1 === 'pasivo' && n2 === 'totales') return 'pasivo';
+        if (n2.includes('patrimonio')) {
+          if (n3 === 'totales' || n3.includes('fondos propios')) return 'ffpp';
+        }
+        if (n2.includes('pasivo no corriente')) {
+          if (n3 === 'totales') return null;
+          if (n3.includes('deudas a largo')) return 'deuda_fin';
+          if (n3.includes('impuesto')) return 'imp_dif_pas';
+        }
+        if (n2.includes('pasivo corriente')) {
+          if (n3 === 'totales') return null;
+          if (n3.includes('deudas a corto') && !n3.includes('grupo')) return 'deuda_entid';
+          if (n3.includes('deudas') && n3.includes('grupo')) return 'otros_fin';
+          if (n3.includes('acreedores')) return 'proveedores'; // WC uses 'proveedores'
+          if (n3.includes('proveedores')) return 'proveedores';
+        }
+        return null;
+      }
+
+      const hist = {};
+      const real = {};
+      BS_LINES.forEach(l => { hist[l.key] = 0; real[l.key] = Array(12).fill(0); });
+      let matchedLines = 0;
+      for (let r = headerIdx + 1; r < rows.length; r++) {
+        const c1 = String(rows[r]?.[0] || '').trim();
+        const c2 = String(rows[r]?.[1] || '').trim();
+        const c3 = String(rows[r]?.[2] || '').trim();
+        if (!c1 && !c2 && !c3) continue;
+        const key = matchFlat(c1, c2, c3);
+        if (!key) continue;
+        matchedLines++;
+        const isPasivo = norm(c1) === 'pasivo';
+        MESES.forEach((_, idx) => {
+          const c = monthCols[idx];
+          if (c !== undefined) {
+            const v = parseNum(rows[r][c]);
+            // Negar pasivos negativos para convertir a valor absoluto
+            real[key][idx] += (isPasivo && v < 0) ? -v : v;
+          }
+        });
+      }
+      console.log('[parseBsEvolFlat] lineas mapeadas:', matchedLines);
+      return { hist, real };
+    }
+
+    // Parsea BS Evol: primera columna = historico (dic-X), luego 12 meses
     // Devuelve: { hist: {key: val}, real: {key: [v1..v12]} }
     function parseBsEvol(wb, sheetName) {
       const ws = wb.Sheets[sheetName];
-      if (!ws) { console.log('[parseBsEvol] Hoja no encontrada:', sheetName); return null; }
-      const rows = sheetToArray(ws);
-      console.log('[parseBsEvol] Total filas:', rows.length);
+      if (!ws) { console.log('[parseBsEvol] hoja no encontrada:', sheetName); return null; }
+      const rows    = sheetToArray(ws);
+      // Detectar formato plano (Gr. Balance Nivel 3 | ... | ene | feb | ...)
+      const isFlat = rows.slice(0, 5).some(row =>
+        row.some(v => String(v||'').toLowerCase().includes('gr.') && String(v||'').toLowerCase().includes('balance'))
+      );
+      if (isFlat) { console.log('[parseBsEvol] Formato plano detectado'); return parseBsEvolFlat(rows); }
+      // Leer tambien con raw:false para obtener texto formateado de celdas de fecha
+      const rowsTxt = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: false });
 
-      // Busca la fila que tenga mes+anio juntos en la misma celda:
-      // debe contener "dic+25" (historico) Y "ene+26" (primer mes real).
-      // Esto evita coger la fila de etiquetas "Historico / Real / Estimado"
-      // que tiene meses sin anio en columnas auxiliares.
-      let headerIdx = -1;
-      for (let r = 0; r < Math.min(rows.length, 20); r++) {
-        const tieneDic25 = rows[r].some(v => { const s = String(v).toLowerCase(); return s.includes('dic') && (s.includes('25') || s.includes('2025')); });
-        const tieneEne26 = rows[r].some(v => { const s = String(v).toLowerCase(); return s.includes('ene') && (s.includes('26') || s.includes('2026')); });
-        if (tieneDic25 && tieneEne26) { headerIdx = r; break; }
+      const norm = s => String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim();
+
+      // Detecta si una celda es una fecha mes/ano (soporta string, serial numerico y Date)
+      const MES_MAP = { ene:0,feb:1,mar:2,abr:3,may:4,jun:5,jul:6,ago:7,sep:8,oct:9,nov:10,dic:11,
+                        jan:0,apr:3,aug:7,dec:11 };
+      function parseMesCell(v) {
+        if (!v && v !== 0) return null;
+        if (v instanceof Date) return { mesIdx: v.getMonth(), year: v.getFullYear() };
+        const n = Number(v);
+        if (!isNaN(n) && n >= 30000 && n <= 60000 && String(v).trim() !== '') {
+          const d = new Date((n - 25569) * 86400000);
+          return { mesIdx: d.getUTCMonth(), year: d.getUTCFullYear() };
+        }
+        const s = norm(v);
+        if (!s) return null;
+        for (const [abbr, idx] of Object.entries(MES_MAP)) {
+          if (s.includes(abbr)) {
+            const ym = s.match(/(\d{2,4})/);
+            if (ym) {
+              const y = parseInt(ym[1]);
+              return { mesIdx: idx, year: y < 100 ? 2000 + y : y };
+            }
+          }
+        }
+        const dm = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
+        if (dm) {
+          const y = parseInt(dm[3]); const year = y < 100 ? 2000 + y : y;
+          return { mesIdx: parseInt(dm[1]) - 1, year };
+        }
+        return null;
       }
-      // Fallback: primera fila con 2+ meses distintos
-      if (headerIdx < 0) {
-        for (let r = 0; r < Math.min(rows.length, 20); r++) {
-          const rowStr = rows[r].map(v => String(v).toLowerCase()).join(' ');
-          const mesesEncontrados = MESES.filter(m => rowStr.includes(m)).length;
-          if (mesesEncontrados >= 2) { headerIdx = r; break; }
+
+      // Helper: cuenta celdas de fecha en una fila
+      function countDateCells(r) {
+        let cnt = 0;
+        const len = Math.max(rows[r]?.length || 0, rowsTxt[r]?.length || 0);
+        for (let c = 0; c < len; c++) {
+          if (parseMesCell(rows[r]?.[c]) || parseMesCell(rowsTxt[r]?.[c])) cnt++;
+        }
+        return cnt;
+      }
+
+      // Estrategia 1: fila que contiene "Balance de Situacion" Y tiene celdas de fecha
+      // (La fila titulo "BALANCE DE SITUACION-EVOLUCION" no tiene fechas y se salta)
+      let headerIdx = -1;
+      let labelCol  = -1;
+      for (let r = 0; r < Math.min(rows.length, 25) && headerIdx < 0; r++) {
+        if (countDateCells(r) < 2) continue; // descartar filas sin fechas
+        for (let c = 0; c < (rows[r]?.length || 0); c++) {
+          if (norm(rows[r][c]).includes('balance de situac')) { headerIdx = r; labelCol = c; break; }
         }
       }
-      console.log('[parseBsEvol] headerIdx:', headerIdx, '| fila:', headerIdx >= 0 ? rows[headerIdx].slice(0,10) : 'N/A');
+      // Estrategia 2: fila con 2+ celdas de fecha (aunque no tenga "Balance de Situacion")
+      if (headerIdx < 0) {
+        for (let r = 0; r < Math.min(rows.length, 25); r++) {
+          if (countDateCells(r) >= 2) { headerIdx = r; break; }
+        }
+      }
+      console.log('[parseBsEvol] headerIdx:', headerIdx, 'labelCol:', labelCol);
       if (headerIdx < 0) return null;
 
-      // Localiza columna hist (dic anterior) y columnas mensuales (ene-26..dic-26)
+      // Recopilar todas las columnas de fecha del header
+      const allDateCols = [];
+      for (let c = 0; c < rows[headerIdx].length; c++) {
+        const m = parseMesCell(rows[headerIdx][c]) || parseMesCell(rowsTxt[headerIdx]?.[c]);
+        if (m) allDateCols.push({ c, mesIdx: m.mesIdx, year: m.year });
+      }
+      // Determinar ano de datos (el mas frecuente / mayor)
+      const yearCounts = {};
+      allDateCols.forEach(x => { yearCounts[x.year] = (yearCounts[x.year] || 0) + 1; });
+      const dataYear = Number(Object.entries(yearCounts).sort((a, b) => b[1] - a[1] || Number(b[0]) - Number(a[0]))[0]?.[0] || 0);
+      // Asignar histCol (primer col con ano < dataYear) y monthCols
       let histCol = -1;
       const monthCols = {};
-      for (let c = 0; c < rows[headerIdx].length; c++) {
-        const v = String(rows[headerIdx][c]).toLowerCase().trim();
-        // Hist: columna dic del ano anterior (puede ser dic-25, dic.- 25, diciembre 2025, etc.)
-        if (v.includes('dic') && (v.includes('25') || v.includes('anterior') || v.includes('2025'))) {
-          if (histCol < 0) histCol = c;
-        }
-        // Meses actuales: busca cada mes de 2026 (requiere anio para evitar ambiguedad)
-        MESES.forEach((m, idx) => {
-          if (monthCols[idx] !== undefined) return;
-          const matchesMes = v.startsWith(m) || v.includes('-' + m) || v.includes(m + '-') || v.includes(m + '.');
-          const matches26  = v.includes('26') || v.includes('2026');
-          if (matchesMes && matches26) monthCols[idx] = c;
-        });
-      }
+      allDateCols.forEach(({ c, mesIdx, year }) => {
+        if (year < dataYear) { if (histCol < 0) histCol = c; }
+        else { if (monthCols[mesIdx] === undefined) monthCols[mesIdx] = c; }
+      });
+      // Si no hay histCol, primera fecha col = hist
+      if (histCol < 0 && allDateCols.length > 0) histCol = allDateCols[0].c;
+      console.log('[parseBsEvol] dataYear:', dataYear, 'histCol:', histCol, 'monthCols:', monthCols);
 
-      // Fallback: si no encontro histCol, usa la primera columna con numeros tras el label
-      if (histCol < 0) {
-        for (let c = 1; c < rows[headerIdx].length; c++) {
-          const v = String(rows[headerIdx][c]).toLowerCase();
-          if (v.includes('hist') || v.includes('anterior') || v.includes('dic')) { histCol = c; break; }
-        }
-      }
-      console.log('[parseBsEvol] histCol:', histCol, '| monthCols:', monthCols);
-
-      const labelCol = findLabelCol(rows, headerIdx, matchBsLine);
+      // Detectar labelCol si no se determino por "Balance de Situacion"
+      if (labelCol < 0) labelCol = findLabelCol(rows, headerIdx, matchBsLine);
       console.log('[parseBsEvol] labelCol:', labelCol);
 
       const hist = {};
@@ -494,7 +682,7 @@
           if (c !== undefined) real[key][idx] = parseNum(rows[r][c]);
         });
       }
-      console.log('[parseBsEvol] Lineas BS mapeadas:', matchedLines);
+      console.log('[parseBsEvol] lineas BS mapeadas:', matchedLines);
       return { hist, real };
     }
 
@@ -745,7 +933,7 @@
       return <span className={'text-xs px-2 py-0.5 rounded-full font-medium ' + (colors[color]||colors.gray)}>{children}</span>;
     }
 
-    function UploadButton({ label, storageKey, onLoaded, loaded, color = 'blue' }) {
+    function UploadButton({ label, storageKey, onLoaded, loaded, color = 'blue', onDownloadTemplate }) {
       const fileRef = useRef(null);
       const colors = {
         blue:   'border-blue-300 bg-blue-50 hover:bg-blue-100 text-blue-700',
@@ -770,16 +958,22 @@
       }
 
       return (
-        <div className={'border-2 border-dashed rounded-lg p-3 cursor-pointer ' + (colors[color]||colors.blue) + (loaded ? ' opacity-75' : '')}
-             onClick={() => fileRef.current.click()}>
-          <input ref={fileRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={handleFile} />
-          <div className="flex items-center gap-2">
+        <div className={'border-2 border-dashed rounded-lg p-3 ' + (colors[color]||colors.blue) + (loaded ? ' opacity-80' : '')}>
+          <div className="flex items-center gap-2 cursor-pointer" onClick={() => fileRef.current.click()}>
+            <input ref={fileRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={handleFile} />
             <span className="text-lg">{loaded ? '✓' : '↑'}</span>
             <div>
               <div className="text-sm font-medium">{label}</div>
               {loaded && <div className="text-xs opacity-70">Cargado — click para reemplazar</div>}
             </div>
           </div>
+          {onDownloadTemplate && (
+            <button
+              className="mt-1.5 text-xs text-gray-400 hover:text-gray-600 underline block"
+              onClick={e => { e.stopPropagation(); onDownloadTemplate(storageKey); }}>
+              Descargar plantilla
+            </button>
+          )}
         </div>
       );
     }
@@ -1214,6 +1408,85 @@
       );
     }
 
+    // ─── PARSERS DE PLANTILLA ─────────────────────────────────────────────────
+    // Plantillas generadas por la app: fila 0 = cabecera, col 0 = "CONCEPTO"
+
+    function isTemplateFmt(rows) {
+      return String(rows?.[0]?.[0] || '').trim().toUpperCase() === 'CONCEPTO';
+    }
+
+    // PyG: col 0 = label exacto, cols 1..12 = valores mensuales
+    function parsePygTpl(rows) {
+      const labelMap = {};
+      PYG_LINES.forEach(l => { labelMap[l.label.toLowerCase()] = l.key; });
+      const result = {};
+      for (let r = 1; r < rows.length; r++) {
+        const label = String(rows[r][0] || '').trim();
+        if (!label) continue;
+        const key = labelMap[label.toLowerCase()] || matchPygLine(label);
+        if (!key) continue;
+        result[key] = Array.from({ length: 12 }, (_, i) => parseNum(rows[r][i + 1]));
+      }
+      return Object.keys(result).length > 0 ? result : null;
+    }
+
+    // BS: detecta si hay col hist (col 1 empieza por "dic") o no
+    // Soporta tres formatos:
+    //   1. Plantilla app: A1="CONCEPTO", col A = labels exactos de BS_LINES
+    //   2. Fuzzy: col A = labels con variantes de escritura (matchBsLine)
+    //   3. Posicional: col A = cualquier cosa, pero hay exactamente BS_LINES.length filas de datos
+    function parseBsTpl(rows) {
+      const labelMap = {};
+      BS_LINES.forEach(l => { labelMap[l.label.toLowerCase()] = l.key; });
+
+      const header = rows[0] || [];
+      const col1 = String(header[1] || '').toLowerCase().trim();
+      const hasHist = col1.startsWith('dic');
+      const offset = hasHist ? 1 : 0;
+      const hist = {};
+      const real = {};
+      BS_LINES.forEach(l => { hist[l.key] = 0; real[l.key] = Array(12).fill(0); });
+      let matched = 0;
+
+      // Intentar por label (exacto o fuzzy)
+      for (let r = 1; r < rows.length; r++) {
+        const label = String(rows[r][0] || '').trim();
+        if (!label) continue;
+        const key = labelMap[label.toLowerCase()] || matchBsLine(label);
+        if (!key) continue;
+        matched++;
+        if (hasHist) hist[key] = parseNum(rows[r][1]);
+        real[key] = Array.from({ length: 12 }, (_, i) => parseNum(rows[r][i + 1 + offset]));
+      }
+
+      // Fallback posicional: si no se reconocio ningun label pero hay exactamente
+      // BS_LINES.length filas de datos, leer por posicion (fila N → BS_LINES[N])
+      if (matched === 0) {
+        const dataRows = rows.slice(1).filter(r => (r || []).length >= 12);
+        if (dataRows.length === BS_LINES.length) {
+          dataRows.forEach((row, idx) => {
+            const key = BS_LINES[idx].key;
+            if (hasHist) hist[key] = parseNum(row[1]);
+            real[key] = Array.from({ length: 12 }, (_, i) => parseNum(row[i + 1 + offset]));
+            matched++;
+          });
+        }
+      }
+
+      return matched > 0 ? { hist, real } : null;
+    }
+
+    // Simple (OPEX/CAPEX/DFN/NoRec): col 0 = label libre, cols 1..12 = valores
+    function parseSimpleTpl(rows) {
+      const result = {};
+      for (let r = 1; r < rows.length; r++) {
+        const label = String(rows[r][0] || '').trim();
+        if (!label) continue;
+        result[label] = Array.from({ length: 12 }, (_, i) => parseNum(rows[r][i + 1]));
+      }
+      return Object.keys(result).length > 0 ? result : null;
+    }
+
     // ─── PANTALLA DE CONFIGURACION ─────────────────────────────────────────────
 
     function ConfigScreen({ data, onLoad, onClear }) {
@@ -1243,25 +1516,38 @@
         if (item.type === 'bs') {
           // Busca la mejor hoja BS disponible
           const bsEvol = wb.SheetNames.find(n => /bs.?evol/i.test(n));
-          const bsYtd  = wb.SheetNames.find(n => /bs.?ytd/i.test(n) || /balance/i.test(n));
           const bsAny  = wb.SheetNames.find(n => /bs/i.test(n));
-          const sheetName = bsEvol || bsYtd || bsAny || wb.SheetNames[0];
-          console.log('[BS] Hoja usada:', sheetName, '| Hojas disponibles:', wb.SheetNames);
-          const raw = parseBsEvol(wb, sheetName);
-          console.log('[BS] Resultado parser:', raw);
+          const sheetName = bsEvol || bsAny || wb.SheetNames[0];
+          const ws0  = wb.Sheets[sheetName];
+          const rows0 = ws0 ? sheetToArray(ws0) : [];
+          const isTpl = isTemplateFmt(rows0)
+            || (rows0.length === BS_LINES.length + 1 && (rows0[0]?.length || 0) >= 12);
+          const raw = isTpl ? parseBsTpl(rows0) : parseBsEvol(wb, sheetName);
           if (!raw) {
-            alert('No se pudo leer el Balance. Hoja detectada: "' + sheetName + '". Revisa que tenga columnas de meses.');
+            alert('No se pudo leer el Balance.\nHoja: "' + sheetName + '".\n' +
+                  (isTpl ? 'La plantilla no contiene lineas reconocidas de BS.'
+                          : 'Revisa que el archivo tenga columnas de meses.'));
             return;
           }
-          // Segun la clave, extraemos la parte correcta
           if (storageKey === 'bsHist') {
-            // Solo el historico dic-25: objeto plano { key: valor }
-            parsed = raw.hist;
+            if (isTpl) {
+              // Si la plantilla tiene columna "dic" hist → raw.hist tiene los datos
+              // Si la plantilla solo tiene 12 meses (sin col hist) → tomar el mes dic (indice 11)
+              const hasHistVals = Object.values(raw.hist || {}).some(v => v !== 0);
+              parsed = hasHistVals
+                ? raw.hist
+                : Object.fromEntries(BS_LINES.map(l => [l.key, raw.real?.[l.key]?.[11] ?? 0]));
+            } else {
+              // Archivo legacy: usar el ultimo mes de real como snapshot dic-25
+              const realArrays = Object.values(raw.real || {}).filter(Array.isArray);
+              const lastMes = realArrays.length > 0 ? realArrays[0].length - 1 : -1;
+              parsed = lastMes >= 0
+                ? Object.fromEntries(BS_LINES.map(l => [l.key, raw.real?.[l.key]?.[lastMes] ?? raw.hist?.[l.key] ?? 0]))
+                : raw.hist;
+            }
           } else if (storageKey === 'bsPpto') {
-            // Solo los 12 meses de presupuesto: { key: [v1..v12] }
             parsed = raw.real;
           } else {
-            // bsReal: estructura completa { hist, real }
             parsed = raw;
           }
         } else {
@@ -1279,27 +1565,31 @@
             sheetName = wb.SheetNames.find(n => /opex/i.test(n) || /explotaci/i.test(n))
                      || wb.SheetNames[0];
           } else if (item.key.startsWith('capex')) {
-            sheetName = wb.SheetNames.find(n => /capex/i.test(n))
-                     || wb.SheetNames[0];
+            sheetName = wb.SheetNames.find(n => /capex/i.test(n)) || wb.SheetNames[0];
           } else if (item.key.startsWith('dfn')) {
-            sheetName = wb.SheetNames.find(n => /dfn/i.test(n) || /deuda/i.test(n))
-                     || wb.SheetNames[0];
+            sheetName = wb.SheetNames.find(n => /dfn/i.test(n) || /deuda/i.test(n)) || wb.SheetNames[0];
           } else {
             sheetName = wb.SheetNames.includes(item.sheet)
               ? item.sheet
               : wb.SheetNames.find(n => n.toLowerCase().includes(item.sheet.toLowerCase()))
               || wb.SheetNames[0];
           }
-          console.log('[PyG/Other] Hoja usada:', sheetName, '| Clave:', storageKey, '| Hojas:', wb.SheetNames);
-          // Hojas de detalle usan parsers especializados (evita que parsePygEvol devuelva {} vacio)
-          if (item.key.includes('norec')) {
+          const ws1  = wb.Sheets[sheetName];
+          const rows1 = ws1 ? sheetToArray(ws1) : [];
+          const isTpl = isTemplateFmt(rows1);
+          if (isTpl) {
+            if (item.key.startsWith('pyg')) {
+              parsed = parsePygTpl(rows1);
+            } else {
+              parsed = parseSimpleTpl(rows1);
+            }
+          } else if (item.key.includes('norec')) {
             parsed = parseNoRecSheet(wb, sheetName, item.mesLabels);
           } else if (item.key.includes('opex') || item.key.includes('capex') || item.key.includes('dfn')) {
             parsed = parseMonthlySheet(wb, sheetName, item.mesLabels);
           } else {
             parsed = parsePygEvol(wb, sheetName, item.mesLabels);
           }
-          console.log('[PyG/Other] Parsed keys:', parsed ? Object.keys(parsed) : 'null', '| ventas[0]:', parsed?.ventas?.[0]);
         }
 
         if (!parsed || (typeof parsed === 'object' && Object.keys(parsed).length === 0)) {
@@ -1310,6 +1600,11 @@
         onLoad(storageKey, parsed);
       }
 
+      function handleDownloadTemplate(storageKey) {
+        const t = getTemplate(storageKey);
+        if (t) downloadXlsx(t.wb, t.name);
+      }
+
       return (
         <div className="space-y-6">
           <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
@@ -1317,7 +1612,8 @@
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
               {configItems.map(item => (
                 <UploadButton key={item.key} label={item.label} storageKey={item.key}
-                  color={item.color} loaded={!!data[item.key]} onLoaded={handleLoaded} />
+                  color={item.color} loaded={!!data[item.key]} onLoaded={handleLoaded}
+                  onDownloadTemplate={handleDownloadTemplate} />
               ))}
             </div>
           </div>
@@ -1327,7 +1623,8 @@
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
               {monthlyItems.map(item => (
                 <UploadButton key={item.key} label={item.label} storageKey={item.key}
-                  color={item.color} loaded={!!data[item.key]} onLoaded={handleLoaded} />
+                  color={item.color} loaded={!!data[item.key]} onLoaded={handleLoaded}
+                  onDownloadTemplate={handleDownloadTemplate} />
               ))}
             </div>
           </div>
@@ -1431,17 +1728,24 @@
 
       // BS YTD: valor del mes activo
       const bsRealMes   = appData.bsReal?.real  ? Object.fromEntries(BS_LINES.map(l => [l.key, appData.bsReal.real?.[l.key]?.[mesActivo] ?? 0])) : null;
-      const bsHistMes   = appData.bsReal?.hist  || appData.bsHist  || null;
+      // bsHistData: snapshot historico dic-25. Usa bsReal.hist solo si tiene valores reales (no ceros).
+      // parseBsEvolFlat devuelve hist={todo ceros} si el archivo plano no tiene columna historica.
+      const bsHistData = (() => {
+        const h = appData.bsReal?.hist;
+        if (h && Object.values(h).some(v => v !== 0)) return h;
+        return appData.bsHist || null;
+      })();
+      const bsHistMes   = bsHistData;
       // bsPpto se guarda como raw.real (objeto plano { key: [v1..v12] }), sin wrapper .real
       const bsPptoMes   = appData.bsPpto ? Object.fromEntries(BS_LINES.map(l => [l.key, appData.bsPpto?.[l.key]?.[mesActivo] ?? 0])) : null;
 
       // CF mes
-      const cfMes = calcCF(adjPygReal, appData.bsReal?.real, appData.bsReal?.hist || appData.bsHist, appData.capexReal, appData.dfnReal, mesActivo);
+      const cfMes = calcCF(adjPygReal, appData.bsReal?.real, bsHistData, appData.capexReal, appData.dfnReal, mesActivo);
 
       // CF YTD (suma mes a mes)
       function cfYtd() {
         if (!adjPygReal || !appData.bsReal?.real) return null;
-        const cfArr = MESES.map((_, m) => calcCF(adjPygReal, appData.bsReal?.real, appData.bsReal?.hist || appData.bsHist, appData.capexReal, appData.dfnReal, m));
+        const cfArr = MESES.map((_, m) => calcCF(adjPygReal, appData.bsReal?.real, bsHistData, appData.capexReal, appData.dfnReal, m));
         const sum = {};
         CF_LINES.forEach(l => { sum[l.key] = cfArr.slice(0, mesActivo+1).reduce((a, cf) => a + (cf?.[l.key] || 0), 0); });
         // Caja EoP y BoP no se suman, son valores de stock
@@ -1541,7 +1845,7 @@
                 {tabBs === 'YTD' && <BsTable
                   hist={bsHistMes} real={bsRealMes} ppto={bsPptoMes}
                   titulo={{ hist: 'dic-25', real: mesLabel, ppto: mesLabel }} />}
-                {tabBs === 'EVOL' && <BsEvol evol={appData.bsReal?.real} bsHist={appData.bsReal?.hist || appData.bsHist} />}
+                {tabBs === 'EVOL' && <BsEvol evol={appData.bsReal?.real} bsHist={bsHistData} />}
               </div>
             )}
 
@@ -1564,7 +1868,7 @@
                 {tabZoom === 'OPEX'   && <ZoomTable data={appData.opexReal}  title="OPEX Real" />}
                 {tabZoom === 'CAPEX'  && <ZoomTable data={appData.capexReal} title="CAPEX Real" />}
                 {tabZoom === 'DFN'    && <ZoomTable data={appData.dfnReal}   title="Deuda Financiera Neta" />}
-                {tabZoom === 'WC'     && <WcTable   bsReal={appData.bsReal?.real} bsHist={appData.bsReal?.hist || appData.bsHist} />}
+                {tabZoom === 'WC'     && <WcTable   bsReal={appData.bsReal?.real} bsHist={bsHistData} />}
               </div>
             )}
           </div>
